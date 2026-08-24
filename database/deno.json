@@ -1,0 +1,13 @@
+{
+  "imports": {
+    "postgres": "npm:postgres@3.4.7",
+    "@std/cli/parse-args": "jsr:@std/cli@1/parse-args"
+  },
+  "tasks": {
+    "migrate": "deno run --env-file --allow-net --allow-read --allow-env migrate.ts up",
+    "migrate:down": "deno run --env-file --allow-net --allow-read --allow-env migrate.ts down",
+    "reset": "deno run --env-file --allow-net --allow-read --allow-env migrate.ts reset",
+    "seed": "deno run --env-file --allow-net --allow-read --allow-env migrate.ts seed",
+    "new-migration": "deno run --allow-write --allow-read new-migration.ts"
+  }
+}

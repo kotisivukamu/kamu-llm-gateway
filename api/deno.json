@@ -1,0 +1,21 @@
+{
+  "imports": {
+    "@shared/": "../shared/",
+    "@std/assert": "jsr:@std/assert@1",
+    "@hono/hono": "npm:hono@4.8.2",
+    "@hono/zod-openapi": "npm:@hono/zod-openapi@0.19.10",
+    "@hono/swagger-ui": "npm:@hono/swagger-ui@0.5.3",
+    "jose": "npm:jose@5.9.6",
+    "postgres": "npm:postgres@3.4.7",
+    "zod": "npm:zod@3.25.67"
+  },
+  "tasks": {
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-sys --allow-ffi --env-file --watch src/main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read --allow-sys --allow-ffi src/main.ts",
+    "test": "deno test",
+    "validate": "deno fmt --check && deno lint && deno check src/**/*.ts && deno test"
+  },
+  "compilerOptions": {
+    "strict": true
+  }
+}

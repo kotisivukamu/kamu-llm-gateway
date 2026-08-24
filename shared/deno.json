@@ -1,0 +1,9 @@
+{
+  "imports": {
+    "postgres": "npm:postgres@3.4.7",
+    "zod": "npm:zod@3.25.67"
+  },
+  "compilerOptions": {
+    "strict": true
+  }
+}

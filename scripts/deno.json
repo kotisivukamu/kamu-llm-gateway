@@ -1,0 +1,12 @@
+{
+  "imports": {
+    "jose": "npm:jose@5.9.6",
+    "@std/cli/parse_args": "jsr:@std/cli@1/parse-args"
+  },
+  "tasks": {
+    "dev-token": "deno run --allow-env --env-file=../api/.env dev-token.ts"
+  },
+  "compilerOptions": {
+    "strict": true
+  }
+}
