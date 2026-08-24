@@ -1,0 +1,18 @@
+{
+  "imports": {
+    "@hono/hono": "npm:hono@4.8.2",
+    "jose": "npm:jose@5.9.6",
+    "postgres": "npm:postgres@3.4.7",
+    "zod": "npm:zod@3.25.67"
+  },
+  "tasks": {
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-write --allow-sys --env-file --watch src/main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read --allow-write --allow-sys src/main.ts",
+    "test": "deno test --allow-read --allow-write --allow-env",
+    "validate": "deno fmt --check && deno lint && deno check src/**/*.ts"
+  },
+  "compilerOptions": {
+    "strict": true
+  },
+  "nodeModulesDir": "auto"
+}

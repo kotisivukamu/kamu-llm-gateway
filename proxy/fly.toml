@@ -1,0 +1,37 @@
+app = "kamu-llm-gateway-proxy"
+primary_region = "arn"
+kill_signal = "SIGTERM"
+kill_timeout = "15s"
+
+[deploy]
+  strategy = "bluegreen"
+
+[env]
+  PORT = "8301"
+  # KamuStatus telemetry. Both values are non-secret by design: the ingest key
+  # is a public write-only DSN-style key (the browser SDK puts it in page
+  # source), and a heartbeat token only lets someone fake an "up" signal.
+  KAMUSTATUS_INGEST_URL = "https://kamustatus-ingest.fly.dev"
+  KAMUSTATUS_INGEST_KEY = "ksts_ef6c7507108d4236828c7eaa3c094665aa62935a25294a7f9eaa88224fc3d998"
+
+[http_service]
+  internal_port = 8301
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[restart]]
+  policy = "always"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
