@@ -520,10 +520,25 @@ derive.post("/keys/derive", async (c) => {
     }
   }
 
+  // --- Rate limit (§7.7): per-parent mint rate per minute ---
+  // Counts derive-minted rows for this parent created in the trailing 60s
+  // (a sliding window, not a fixed-bucket reset), regardless of the child's
+  // current status — a runaway script that immediately revokes what it mints
+  // must not be able to bypass the rate limit that way. This is on top of,
+  // not instead of, the max-active-children cap below (both are named in
+  // §7.7: "N mints/min, capped at M active children per parent").
+  const [recentCount] = await adminSql<{ n: number }[]>`
+    SELECT COUNT(*)::int AS n
+    FROM llm.keys
+    WHERE parent_key_id = ${parent.id}
+      AND created_at > now() - interval '1 minute'
+  `;
+  if (recentCount && recentCount.n >= env.SUBKEY_DERIVE_RATE_PER_MIN) {
+    return c.json({ error: "derive rate limit exceeded for this parent" }, 429);
+  }
+
   // --- Rate limit (§7.7): max active children per parent ---
-  // MVP: cap active (not revoked, not expired) children. Per-minute mint rate is
-  // bounded implicitly by the active cap for short-lived children; a separate
-  // per-minute window can be added if needed.
+  // MVP: cap active (not revoked, not expired) children.
   const [activeCount] = await adminSql<{ n: number }[]>`
     SELECT COUNT(*)::int AS n
     FROM llm.keys
