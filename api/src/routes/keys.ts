@@ -198,6 +198,22 @@ keys.get("/keys", async (c) => {
 keys.post(
   "/keys",
   requireGrant("llm.keys.create", teamOrgIdFromCreate),
+  // Minting a can_mint key is additionally gated by llm.keys.mint (admin-only)
+  // per ADR 0001's 2026-08-25 "can_mint provisioning" resolution: issuing a
+  // key that can itself mint sub-keys is the single most powerful capability
+  // in this system, so it needs its own grant on top of the ordinary
+  // llm.keys.create check. A request that doesn't set can_mint:true is
+  // unaffected — this middleware is a no-op for it.
+  async (c: Context, next: () => Promise<void>) => {
+    const body = await c.req.json<{ can_mint?: boolean }>().catch(
+      () => ({}) as { can_mint?: boolean },
+    );
+    if (body.can_mint) {
+      await requireGrant("llm.keys.mint", teamOrgIdFromCreate)(c, next);
+      return;
+    }
+    await next();
+  },
   async (c) => {
     const user = c.get("user");
     const body = await c.req.json<{
