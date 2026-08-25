@@ -85,6 +85,26 @@ const schema = z.object({
   // this to expose it on a cache-config endpoint; the signing path does not
   // read it.
   KEY_META_CACHE_TTL_SEC: z.coerce.number().int().positive().default(10),
+
+  // Internal-caller boundary for POST /api/keys/derive (ADR 0001, open
+  // question "internal-caller authz to the gateway", resolved 2026-08-25): we
+  // never issue can_mint to external orgs, so derive additionally requires
+  // the parent key's team_id to equal this fixed internal-platform org id, on
+  // top of the existing can_mint check. This is the llm.teams.id (not the
+  // KamuID org id) of the one team that owns every can_mint key (studio,
+  // builder-queue, the kamuhub agent).
+  INTERNAL_PLATFORM_TEAM_ID: z.string().min(1),
+
+  // Control-plane poller (ADR 0001 §8/§9): pulls the proxy satellite's local
+  // usage buffer (GET /usage) into the durable llm.usage_log table. Base URL
+  // of the proxy satellite and the shared service-to-service token it expects
+  // (proxy/src/routes/usage.ts's CONTROL_PLANE_POLL_TOKEN — the same value on
+  // both sides). Interval in ms between poll runs; the poller itself streams
+  // through the whole backlog per run (paging on max_id) so a slow interval
+  // still catches up in one run after an outage.
+  LLM_PROXY_URL: z.string().url().default("http://localhost:8301"),
+  CONTROL_PLANE_POLL_TOKEN: z.string().min(1),
+  USAGE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
 });
 
 const parsed = schema.safeParse(Deno.env.toObject());

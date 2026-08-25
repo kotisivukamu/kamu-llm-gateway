@@ -1,6 +1,6 @@
 # ADR 0001 — `kamu-llm-gateway`: the API key is the product
 
-- **Status:** Proposed — 2026-08-24
+- **Status:** Accepted — 2026-08-24, open questions resolved 2026-08-25
 - **Context repo:** new top-level `kamu-llm-gateway/` in the KamuHub workspace
 - **Builds on:** kamuhub ADR 0001 (identity/authz/billing boundaries), ADR 0002
   (platform agent service), ADR 0005 (public CLI + site git access)
@@ -662,30 +662,35 @@ Pennies. This is the explicit, accepted trade for deterministic ~0ms TTFT.
 5. **Remove the kotisivukamu control-plane guest** (poller, `internal-api`
    llm_usage route, `LlmTokens.jsx` data layer, `scripts/mint.ts`).
 
-## Open questions
+## Open questions (resolved 2026-08-25)
 
-- **Key shape on the wire.** Opaque random string (`sk_live_…`) vs. a
-  prefixed, Stripe-style key. Lean prefixed-opaque for display + grep safety;
-  confirm during implementation.
-- **`can_mint` provisioning.** Top-level `can_mint` keys are admin-issued (the
-  services that need to mint — studio, builder-queue, the kamuhub agent —
-  receive one out-of-band). Whether the *act of issuing* a `can_mint` key is
-  itself gated by a kamuhub grant (`llm.keys.mint`) or is purely an admin
-  out-of-band operation is a kamuhub policy decision. Either way, the gateway
-  just reads the `can_mint` column on the parent at derive time.
+- **Key shape on the wire.** *Resolved: prefixed-opaque.* Already implemented
+  as `sk_live_…`, sha256-hashed (`api/src/lib/keys.ts`). No further decision
+  needed.
+- **`can_mint` provisioning.** *Resolved: gated by a kamuhub grant.* Issuing a
+  `can_mint` key requires `llm.keys.mint` (admin-only), enforced by kamuhub the
+  same way as every other privileged action in this system. Rationale: the
+  ADR's own design principle (§1, §9) is that every capability is a grant
+  kamuhub enforces and can audit; carving out the single most powerful
+  capability — the ability to mint minting keys — as an ungoverned,
+  unauditable out-of-band step contradicts that principle for no real benefit,
+  since the set of holders (studio, builder-queue, the kamuhub agent) is small
+  and already goes through kamuhub-mediated provisioning for everything else.
 - **Budget enforcement location.** *Resolved by §10.* Satellite-side
   pre-check stays (bounds blast radius to budget + in-flight); the proxy gates
   on in-memory per-key spend, updated post-response, with a G-counter gossip +
   central-poller two-layer model for cross-instance coordination. Soft overdraft
   is the explicit trade for deterministic ~0ms TTFT; exact spend would require a
   synchronous central-DB check on every request, which is rejected.
-- **Internal-caller authz to the gateway.** Internal services are not KamuID
-  users and have no browser session, so they derive sub-keys at runtime with no
-  BFF context (parent-key auth on `/api/keys/derive`, no `X-Kamuhub-Authz`).
-  Confirm that derivation is limited to `can_mint` keys whose `team_id` belongs
-  to an internal platform org, so an external customer's `can_mint` key (if we
-  ever issue one) cannot self-delegate — or decide we never issue `can_mint` to
-  external orgs at all.
+- **Internal-caller authz to the gateway.** *Resolved: we never issue
+  `can_mint` to external orgs.* `POST /api/keys/derive` additionally requires
+  the parent key's `team_id` to equal a fixed internal-platform org id (env
+  config), on top of the existing `can_mint` check. Rationale: this is the
+  simplest closure of the confused-deputy risk in §7.4, it matches the actual
+  present-day caller set (studio, builder-queue, the kamuhub agent — all
+  internal), and it avoids building a second, more permissive external-`can_mint`
+  path that has no current consumer. If an external `can_mint` use case appears
+  later, it should be a deliberate follow-up ADR, not a default left open here.
 
 > Resolved by §7 (delegation risk model): child TTL ≤ parent remaining;
 > cascade revocation via `parent_key_id`/`root_key_id`; depth = 1 (`can_mint`

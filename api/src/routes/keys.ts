@@ -400,6 +400,15 @@ derive.post("/keys/derive", async (c) => {
   if (!parent.can_mint || parent.parent_key_id !== null) {
     return c.json({ error: "key cannot mint sub-keys" }, 403);
   }
+  // Internal-caller boundary (ADR 0001, open question resolved 2026-08-25):
+  // we never issue can_mint to external orgs, so derive additionally requires
+  // the parent's team to be the fixed internal-platform org. This is the
+  // simplest closure of the confused-deputy risk in §7.4 — until this lands,
+  // any can_mint key (there shouldn't be any external ones, but nothing
+  // enforced that) could derive freely.
+  if (parent.team_id !== env.INTERNAL_PLATFORM_TEAM_ID) {
+    return c.json({ error: "key cannot mint sub-keys" }, 403);
+  }
 
   const body = await c.req.json<{
     label?: string;
