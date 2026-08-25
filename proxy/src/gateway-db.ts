@@ -48,11 +48,33 @@ export interface KeyMeta {
 export const DENY: unique symbol = Symbol("deny");
 export type CachedKeyMeta = KeyMeta | typeof DENY | null;
 
+// Postgres NUMERIC columns (budget_usd) come back from postgres.js as
+// strings, never as `number` (postgres.js never auto-coerces numeric, to
+// avoid silent float precision loss). Coerce once here, at the boundary
+// where a DB row becomes a KeyMeta, so every downstream consumer (the
+// key-meta cache, auth.ts, proxy.ts) can trust `budget_usd` is a real
+// `number | null` and compare it directly. Coercing at the call sites
+// instead would be easy to miss on the hot path — this is the one place a
+// row is turned into the cached shape.
+function toKeyMeta(
+  row:
+    | (Omit<KeyMeta, "budget_usd"> & { budget_usd: string | number | null })
+    | undefined,
+): KeyMeta | null {
+  if (!row) return null;
+  return {
+    ...row,
+    budget_usd: row.budget_usd === null ? null : Number(row.budget_usd),
+  };
+}
+
 // Look up a top-level opaque key by its sha256 hex hash.
 export async function lookupKeyByHash(
   hash: string,
 ): Promise<KeyMeta | null> {
-  const rows = await gateway<KeyMeta[]>`
+  const rows = await gateway<
+    (Omit<KeyMeta, "budget_usd"> & { budget_usd: string | number | null })[]
+  >`
     SELECT id AS key_id, label, models, budget_usd, status, key_type,
            parent_key_id::text AS parent_key_id,
            root_key_id::text   AS root_key_id,
@@ -61,14 +83,16 @@ export async function lookupKeyByHash(
      WHERE key_hash = ${hash}
      LIMIT 1
   `;
-  return rows[0] ?? null;
+  return toKeyMeta(rows[0]);
 }
 
 // Look up a derived sub-key by its row PK (= the JWT's jti).
 export async function lookupKeyById(
   keyId: string,
 ): Promise<KeyMeta | null> {
-  const rows = await gateway<KeyMeta[]>`
+  const rows = await gateway<
+    (Omit<KeyMeta, "budget_usd"> & { budget_usd: string | number | null })[]
+  >`
     SELECT id AS key_id, label, models, budget_usd, status, key_type,
            parent_key_id::text AS parent_key_id,
            root_key_id::text   AS root_key_id,
@@ -77,5 +101,5 @@ export async function lookupKeyById(
      WHERE id = ${keyId}
      LIMIT 1
   `;
-  return rows[0] ?? null;
+  return toKeyMeta(rows[0]);
 }
