@@ -535,57 +535,84 @@ derive.post("/keys/derive", async (c) => {
     }
   }
 
-  // --- Rate limit (§7.7): per-parent mint rate per minute ---
-  // Counts derive-minted rows for this parent created in the trailing 60s
-  // (a sliding window, not a fixed-bucket reset), regardless of the child's
-  // current status — a runaway script that immediately revokes what it mints
-  // must not be able to bypass the rate limit that way. This is on top of,
-  // not instead of, the max-active-children cap below (both are named in
-  // §7.7: "N mints/min, capped at M active children per parent").
-  const [recentCount] = await adminSql<{ n: number }[]>`
-    SELECT COUNT(*)::int AS n
-    FROM llm.keys
-    WHERE parent_key_id = ${parent.id}
-      AND created_at > now() - interval '1 minute'
-  `;
-  if (recentCount && recentCount.n >= env.SUBKEY_DERIVE_RATE_PER_MIN) {
-    return c.json({ error: "derive rate limit exceeded for this parent" }, 429);
-  }
-
-  // --- Rate limit (§7.7): max active children per parent ---
-  // MVP: cap active (not revoked, not expired) children.
-  const [activeCount] = await adminSql<{ n: number }[]>`
-    SELECT COUNT(*)::int AS n
-    FROM llm.keys
-    WHERE parent_key_id = ${parent.id}
-      AND status = 'active'
-      AND (expires_at IS NULL OR expires_at > now())
-  `;
-  if (activeCount && activeCount.n >= env.SUBKEY_DERIVE_MAX_ACTIVE) {
-    return c.json({ error: "too many active children for this parent" }, 429);
-  }
-
   // metadata is stored as JSONB; pass as a JSON-stringified param.
   const metadataJson = body.metadata != null
     ? JSON.stringify(body.metadata)
     : null;
 
-  // --- Insert the derived keys row ---
-  // can_mint = false unconditionally (depth 1). team_id = parent.team_id (no
-  // cross-tenant). parent_key_id + root_key_id carry the lineage. key_hash is
-  // NULL for derived keys (the JWT on the wire is the credential; jti = row PK).
-  const [child] = await adminSql<DerivedKeyRow[]>`
-    INSERT INTO llm.keys
-      (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-       status, can_mint, parent_key_id, root_key_id, metadata, expires_at)
-    VALUES
-      (${parent.team_id}, ${childLabel}, null, null, 'derived', ${childModels},
-       ${childBudget}, 'active', false, ${parent.id}, ${parent.root_key_id},
-       ${metadataJson}::jsonb, ${childExpiresAt})
-    RETURNING id, team_id, label, key_type, models, budget_usd, status,
-              can_mint, parent_key_id, root_key_id, metadata, expires_at,
-              created_at
-  `;
+  // --- Rate limit (§7.7) + insert, made atomic ---
+  // Original shape was SELECT COUNT(*) then a separate INSERT with no lock
+  // between them — under concurrent derive calls against the same parent,
+  // every in-flight request reads the count *before* any of the siblings'
+  // inserts commit, so all of them observe "under the limit" and all of them
+  // insert (TOCTOU race; re-verification of 3c9f308 measured 14/15 succeeding
+  // against a configured limit of 5). Fixed by taking a Postgres session
+  // (transaction-scoped) advisory lock keyed on the parent's id before doing
+  // either count check, and holding it across the insert. This serializes
+  // derive calls per-parent (not globally — different parents key different
+  // locks) and holds correctly across instances in the documented multi-
+  // instance HA posture (ADR §10.3), since the lock lives in Postgres, not
+  // in-process. hashtextextended(text, 0) gives the bigint pg_advisory_xact_lock
+  // wants; the seed is fixed so the same parent id always maps to the same
+  // lock. The lock auto-releases at transaction end (commit or rollback), so
+  // there's no separate unlock path to forget.
+  const child = await adminSql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${parent.id}, 0))`;
+
+    // Counts derive-minted rows for this parent created in the trailing 60s
+    // (a sliding window, not a fixed-bucket reset), regardless of the child's
+    // current status — a runaway script that immediately revokes what it
+    // mints must not be able to bypass the rate limit that way. This is on
+    // top of, not instead of, the max-active-children cap below (both are
+    // named in §7.7: "N mints/min, capped at M active children per parent").
+    const [recentCount] = await tx<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n
+      FROM llm.keys
+      WHERE parent_key_id = ${parent.id}
+        AND created_at > now() - interval '1 minute'
+    `;
+    if (recentCount && recentCount.n >= env.SUBKEY_DERIVE_RATE_PER_MIN) {
+      return "rate_limited" as const;
+    }
+
+    // --- Rate limit (§7.7): max active children per parent ---
+    // MVP: cap active (not revoked, not expired) children.
+    const [activeCount] = await tx<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n
+      FROM llm.keys
+      WHERE parent_key_id = ${parent.id}
+        AND status = 'active'
+        AND (expires_at IS NULL OR expires_at > now())
+    `;
+    if (activeCount && activeCount.n >= env.SUBKEY_DERIVE_MAX_ACTIVE) {
+      return "too_many_active" as const;
+    }
+
+    // --- Insert the derived keys row ---
+    // can_mint = false unconditionally (depth 1). team_id = parent.team_id (no
+    // cross-tenant). parent_key_id + root_key_id carry the lineage. key_hash is
+    // NULL for derived keys (the JWT on the wire is the credential; jti = row PK).
+    const [row] = await tx<DerivedKeyRow[]>`
+      INSERT INTO llm.keys
+        (team_id, label, key_hash, prefix, key_type, models, budget_usd,
+         status, can_mint, parent_key_id, root_key_id, metadata, expires_at)
+      VALUES
+        (${parent.team_id}, ${childLabel}, null, null, 'derived', ${childModels},
+         ${childBudget}, 'active', false, ${parent.id}, ${parent.root_key_id},
+         ${metadataJson}::jsonb, ${childExpiresAt})
+      RETURNING id, team_id, label, key_type, models, budget_usd, status,
+                can_mint, parent_key_id, root_key_id, metadata, expires_at,
+                created_at
+    `;
+    return row;
+  });
+
+  if (child === "rate_limited") {
+    return c.json({ error: "derive rate limit exceeded for this parent" }, 429);
+  }
+  if (child === "too_many_active") {
+    return c.json({ error: "too many active children for this parent" }, 429);
+  }
 
   // Sign the compact Ed25519 JWT (jti = row PK). The row is the authority on
   // lifecycle/lineage/budget; the JWT is the authority on request authenticity.
