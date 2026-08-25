@@ -1,6 +1,8 @@
 # ADR 0001 — `kamu-llm-gateway`: the API key is the product
 
-- **Status:** Accepted — 2026-08-24, open questions resolved 2026-08-25
+- **Status:** Accepted — 2026-08-24, open questions resolved 2026-08-25,
+  `can_mint` provisioning decision superseded 2026-08-25 (see "Open questions"
+  below)
 - **Context repo:** new top-level `kamu-llm-gateway/` in the KamuHub workspace
 - **Builds on:** kamuhub ADR 0001 (identity/authz/billing boundaries), ADR 0002
   (platform agent service), ADR 0005 (public CLI + site git access)
@@ -667,15 +669,65 @@ Pennies. This is the explicit, accepted trade for deterministic ~0ms TTFT.
 - **Key shape on the wire.** *Resolved: prefixed-opaque.* Already implemented
   as `sk_live_…`, sha256-hashed (`api/src/lib/keys.ts`). No further decision
   needed.
-- **`can_mint` provisioning.** *Resolved: gated by a kamuhub grant.* Issuing a
-  `can_mint` key requires `llm.keys.mint` (admin-only), enforced by kamuhub the
-  same way as every other privileged action in this system. Rationale: the
-  ADR's own design principle (§1, §9) is that every capability is a grant
-  kamuhub enforces and can audit; carving out the single most powerful
-  capability — the ability to mint minting keys — as an ungoverned,
-  unauditable out-of-band step contradicts that principle for no real benefit,
-  since the set of holders (studio, builder-queue, the kamuhub agent) is small
-  and already goes through kamuhub-mediated provisioning for everything else.
+- **`can_mint` provisioning.**
+  ~~*Resolved: gated by a kamuhub grant.* Issuing a `can_mint` key requires
+  `llm.keys.mint` (admin-only), enforced by kamuhub the same way as every
+  other privileged action in this system. Rationale: the ADR's own design
+  principle (§1, §9) is that every capability is a grant kamuhub enforces and
+  can audit; carving out the single most powerful capability — the ability to
+  mint minting keys — as an ungoverned, unauditable out-of-band step
+  contradicts that principle for no real benefit, since the set of holders
+  (studio, builder-queue, the kamuhub agent) is small and already goes through
+  kamuhub-mediated provisioning for everything else.~~
+  **SUPERSEDED 2026-08-25.** `can_mint` key issuance and revocation is now
+  managed exclusively through the new `admin/` app (its own Fly app,
+  `llm-proxy-admin`), not through a kamuhub grant. This is a deliberate
+  reversal of the 2026-08-25-morning resolution above, made the same day once
+  building the surface made the shape mismatch concrete:
+  - **This is not the shape kamuhub's grant model fits.** Every other grant
+    in this system (`llm.keys.create`, `llm.keys.revoke`) is a *customer-facing,
+    per-org* action: an org member acting within their own org's data, scoped
+    by RLS, rendered through the kamuhub dashboard. Minting a `can_mint` key is
+    a *cross-org, superuser* action with no owning org and no RLS scope to
+    speak of — the set of people who should be able to do it is "platform
+    operators," not "members of org X with grant Y." Bending the per-org grant
+    model to cover a capability that has no org is what the original
+    resolution actually did, and it does not fit cleanly: `requireGrant`'s
+    whole contract (`resolveKamuidOrgId` — see `api/src/routes/keys.ts`)
+    assumes the action targets one org.
+  - **A genuinely different surface, not a missing grant.** `admin/` is a
+    separate authn system (better-auth, its own `admin_auth` Postgres schema,
+    no self-service signup — see `admin/README.md`) precisely because "can an
+    operator do platform-wide superuser things" is not a question KamuID
+    identity + a kamuhub org grant is designed to answer. Keeping it there
+    would mean either (a) a `can_mint` grant scoped to a fake/internal
+    "platform" org, which is the confused-deputy shape ADR §7.4's tenant
+    boundary exists to prevent, or (b) kamuhub growing an ungoverned
+    non-org-scoped superuser grant type solely for this one capability. Both
+    are worse than a dedicated small admin surface.
+  - **The set of holders didn't change, only who provisions them.** studio,
+    builder-queue, and the kamuhub agent still each hold exactly one
+    `can_mint` key, scoped to the internal-platform team, exactly as designed
+    in §6. What changed is *who mints that key*: a platform operator through
+    `admin/`, not an org member through a kamuhub-rendered dashboard action.
+  - **Known follow-up (do not build speculatively):** the kamuhub-side
+    `llm.keys.mint` grant, added by kamuhub's own migration
+    `20260825120000_llm_gateway_grants.up.sql`, is now dead/unused code in the
+    kamuhub repo. That repo is out of scope for this change (this gateway
+    doesn't touch kamuhub), but a future kamuhub cleanup pass should remove
+    it — leaving it live but unenforced is a landmine for whoever next reads
+    kamuhub's grant catalog and assumes it does something.
+  - **Known follow-up in THIS repo:** `api/src/routes/keys.ts`'s
+    `POST /keys` still additionally gates `can_mint: true` behind
+    `requireGrant("llm.keys.mint", ...)` (the old path). It is untouched by
+    this change to avoid destabilizing the existing keys-CRUD test suite in
+    the same pass as adding `admin/`; a follow-up should decide whether to
+    remove that branch outright (making `admin/` truly the only path, per
+    this note's own title) or leave it as a defense-in-depth belt-and-braces
+    check now that the kamuhub grant behind it is itself unused (see the
+    previous bullet) — either is defensible, but the current state (both
+    paths technically live, only one actually provisioned) should not be
+    mistaken for the intended end state.
 - **Budget enforcement location.** *Resolved by §10.* Satellite-side
   pre-check stays (bounds blast radius to budget + in-flight); the proxy gates
   on in-memory per-key spend, updated post-response, with a G-counter gossip +
