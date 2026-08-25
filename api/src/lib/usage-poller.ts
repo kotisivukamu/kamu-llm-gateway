@@ -83,11 +83,20 @@ async function pollOnce(since: number): Promise<number> {
     const page = (await res.json()) as UsageResponse;
 
     if (page.rows.length > 0) {
-      // Bulk insert via json_populate_recordset: one JSON parameter carries
+      // Bulk insert via jsonb_populate_recordset: one JSON parameter carries
       // the whole page. id is the satellite's own row id — explicit, not
       // generated — so the cursor (MAX(id)) stays aligned across restarts.
       // ON CONFLICT (id) DO NOTHING makes re-polling idempotent.
-      const rowsJson = JSON.stringify(page.rows.map((r) => ({
+      //
+      // Pass the page through sql.json() (postgres.js's jsonb Parameter
+      // helper), NOT `JSON.stringify(...)` + `${…}::json`: postgres.js
+      // JSON-encodes any plain JS value bound where the driver infers a
+      // json/jsonb parameter, so handing it an already-stringified JSON
+      // string double-encodes it into a JSON *string scalar* instead of an
+      // array — `jsonb_populate_recordset` then fails with "cannot call
+      // ... on a scalar". sql.json() sends the value with the jsonb OID
+      // directly, so it round-trips as a real array.
+      const rows = page.rows.map((r) => ({
         id: r.id,
         key_id: r.key_id,
         parent_key_id: r.parent_key_id,
@@ -97,13 +106,28 @@ async function pollOnce(since: number): Promise<number> {
         tokens_in: r.input_tokens,
         tokens_out: r.output_tokens,
         created_at: r.created_at,
-      })));
+      }));
 
+      // Explicit column list on BOTH sides: llm.usage_log has 10 columns
+      // (id, key_id, parent_key_id, root_key_id, model, cost_usd, tokens_in,
+      // tokens_out, metadata, created_at). `SELECT *` from
+      // jsonb_populate_recordset(null::llm.usage_log, …) yields all 10 in
+      // table-declaration order, including `metadata`, which the satellite's
+      // /usage contract doesn't carry (proxy/src/routes/usage.ts's UsageRow
+      // has no metadata field to poll). Selecting `*` against a 9-column
+      // INSERT list was an arity mismatch that made every poll fail and the
+      // ledger stay empty. Naming the same 9 columns on both sides fixes the
+      // arity without inventing metadata the satellite doesn't send; the
+      // column defaults to NULL on insert, same as before this fix.
       await adminSql`
         INSERT INTO llm.usage_log
           (id, key_id, parent_key_id, root_key_id, model, cost_usd,
            tokens_in, tokens_out, created_at)
-        SELECT * FROM json_populate_recordset(null::llm.usage_log, ${rowsJson}::json)
+        SELECT id, key_id, parent_key_id, root_key_id, model, cost_usd,
+               tokens_in, tokens_out, created_at
+        FROM jsonb_populate_recordset(null::llm.usage_log, ${
+        adminSql.json(rows)
+      })
         ON CONFLICT (id) DO NOTHING
       `;
     }
