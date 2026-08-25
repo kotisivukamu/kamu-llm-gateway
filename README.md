@@ -80,3 +80,39 @@ Drive it through the unified front door: the **kamuhub** dashboard at
 `app.kamuhub.com`, which injects the `X-Kamuhub-Authz` context. Internal
 services derive sub-keys at `POST /api/keys/derive` (parent-key auth, no BFF
 context).
+
+## Running tests
+
+The regression suite (`api/src/tests/`, `proxy/src/tests/`) needs a real
+Postgres — no mocking of the DB layer. `.github/workflows/ci.yml` starts one
+per package as a service container; to run the same thing locally:
+
+```bash
+# 1. A throwaway test Postgres (any port; adjust the URLs below to match)
+docker run -d --name kamu-llm-gateway-test-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=kamu_llm_gateway_test -p 5432:5432 postgres:16
+
+# 2. app_user role (dev bootstrap normally does this once per box)
+psql postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test \
+  -c "CREATE ROLE app_user LOGIN PASSWORD 'app_user';" \
+  -c "GRANT ALL ON DATABASE kamu_llm_gateway_test TO app_user;"
+
+# 3. Migrate
+cd database
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test \
+  deno run --allow-net --allow-read --allow-env migrate.ts up
+
+# 4. Run each package's tests. Every env var the test process needs has a
+#    default baked into src/tests/support/env.ts (throwaway Ed25519 test key
+#    material + postgres://…/kamu_llm_gateway_test on localhost:5432) — set
+#    a var explicitly only to point at a different DB/port, or when running
+#    outside the support/env.ts bootstrap (e.g. CI's `env:` block, which sets
+#    them explicitly so the workflow is self-documenting).
+cd ../api && deno task test      # or `deno task validate` (fmt+lint+check+test)
+cd ../proxy && deno task test    # proxy's `validate` task is fmt+lint+check only
+```
+
+The suite truncates and reseeds its own fixture rows per test file
+(`support/db.ts`'s `resetDb`) — it's safe to point it at a scratch DB and
+re-run repeatedly, but don't point it at a real dev/prod database.

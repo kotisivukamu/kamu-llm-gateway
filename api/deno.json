@@ -12,8 +12,8 @@
   "tasks": {
     "dev": "deno run --allow-net --allow-env --allow-read --allow-sys --allow-ffi --env-file --watch src/main.ts",
     "start": "deno run --allow-net --allow-env --allow-read --allow-sys --allow-ffi src/main.ts",
-    "test": "deno test",
-    "validate": "deno fmt --check && deno lint && deno check src/**/*.ts && deno test"
+    "test": "deno test --allow-net --allow-env --allow-read --allow-sys --allow-ffi",
+    "validate": "deno fmt --check && deno lint && deno check src/**/*.ts && deno test --allow-net --allow-env --allow-read --allow-sys --allow-ffi"
   },
   "compilerOptions": {
     "strict": true

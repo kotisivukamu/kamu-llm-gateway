@@ -61,7 +61,10 @@ async function loadCursor(): Promise<number> {
   return row?.max_id ?? 0;
 }
 
-async function pollOnce(since: number): Promise<number> {
+// Exported for tests only (see src/tests/usage-poller.test.ts): lets a test
+// drive a single poll pass deterministically (mocked fetch, real Postgres)
+// instead of racing the setInterval loop in startUsagePoller.
+export async function pollOnce(since: number): Promise<number> {
   const base = env.LLM_PROXY_URL.replace(/\/$/, "");
   let cursor = since;
   let pages = 0;

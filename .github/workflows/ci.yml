@@ -1,0 +1,162 @@
+name: CI
+
+# Regression suite for kamu-llm-gateway. Two Deno packages (api, proxy) each
+# get their own throwaway Postgres service container: migrate up, create the
+# app_user role the app connects as (mirrors dev bootstrap — see
+# database/migrations/20260824120000_initial_schema.up.sql's own comment that
+# app_user is expected to already exist), then `deno task validate`
+# (fmt/lint/check + the api's own `deno test`) and, for proxy, `deno task test`
+# separately since its `validate` task doesn't run tests (see proxy/deno.json).
+# A third job rehearses the migration chain itself (up / down / up), mirroring
+# kamuid's migrations CI job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  migrations:
+    name: Migrations (up / down / up)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: database
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kamu_llm_gateway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/kamu_llm_gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Apply all migrations (forward)
+        run: deno run --allow-net --allow-read --allow-env migrate.ts up
+
+      - name: Roll back the newest migration
+        run: deno run --allow-net --allow-read --allow-env migrate.ts down
+
+      - name: Re-apply it
+        run: deno run --allow-net --allow-read --allow-env migrate.ts up
+
+  api:
+    name: API (Deno)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kamu_llm_gateway_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Test env for `deno test` (api/src/tests/support/env.ts) — throwaway
+      # Ed25519 key material generated for this suite only, never used
+      # outside CI/local test runs. See README "Running tests".
+      APP_USER_DATABASE_URL: postgres://app_user:app_user@localhost:5432/kamu_llm_gateway_test
+      BYPASSRLS_DATABASE_URL: postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test
+      KAMUHUB_JWKS_URL: dev
+      KAMUHUB_DEV_JWK: '{"kty":"OKP","crv":"Ed25519","x":"-P0V-0GhV1nFu5fXTHaquDkhWJoeXNe3Wm3kjKANXnc"}'
+      KAMUHUB_DEV_PRIVATE_KEY: BABUQlkxgTrmH2mdLOdlaIHdelYEqrWPKQqOpSWHAX4=
+      ED25519_PRIVATE_KEY: 9eoI/HkwmmgkmKzs9yu8drtLyeglFbz5FIulBSRHXrk=
+      ED25519_PUBLIC_KEY: VxiWrfnCtLTKomsUlDYHqGcLrUsyUh0g+n310PIbS64=
+      INTERNAL_PLATFORM_TEAM_ID: 00000000-0000-0000-0000-00000000ffff
+      CONTROL_PLANE_POLL_TOKEN: ci-poll-token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Create app_user role (mirrors dev bootstrap)
+        run: |
+          psql "postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test" \
+            -c "CREATE ROLE app_user LOGIN PASSWORD 'app_user';"
+          psql "postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test" \
+            -c "GRANT ALL ON DATABASE kamu_llm_gateway_test TO app_user;"
+
+      - name: Apply migrations
+        working-directory: database
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test
+        run: deno run --allow-net --allow-read --allow-env migrate.ts up
+
+      - run: deno task validate
+
+  proxy:
+    name: Proxy (Deno)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proxy
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kamu_llm_gateway_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # gateway-db.numeric.test.ts connects as postgres (owner) directly, not
+      # app_user, to seed fixture rows — but GATEWAY_DATABASE_URL (what the
+      # module under test itself connects with) is the app_user URL, matching
+      # prod (a read-only pool). See proxy/.env.example.
+      GATEWAY_DATABASE_URL: postgres://app_user:app_user@localhost:5432/kamu_llm_gateway_test
+      ED25519_PUBLIC_KEY: VxiWrfnCtLTKomsUlDYHqGcLrUsyUh0g+n310PIbS64=
+      CONTROL_PLANE_POLL_TOKEN: ci-poll-token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Create app_user role (mirrors dev bootstrap)
+        run: |
+          psql "postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test" \
+            -c "CREATE ROLE app_user LOGIN PASSWORD 'app_user';"
+          psql "postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test" \
+            -c "GRANT ALL ON DATABASE kamu_llm_gateway_test TO app_user;"
+
+      - name: Apply migrations
+        working-directory: database
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test
+        run: deno run --allow-net --allow-read --allow-env migrate.ts up
+
+      # proxy's `validate` task is fmt/lint/check only (no test — see
+      # proxy/deno.json); run the test suite as its own step so a fmt/lint
+      # failure and a test failure are both distinctly reported.
+      - run: deno task validate
+      - run: deno task test
