@@ -473,6 +473,21 @@ derive.post("/keys/derive", async (c) => {
       400,
     );
   }
+  // Absolute TTL ceiling (MAX_SUBKEY_TTL_SECONDS), independent of the
+  // parent-remaining-TTL clamp below. §7.1's clamp alone imposes no upper
+  // bound when the parent is unbounded (expires_at IS NULL — the permanent
+  // service-key case), so an unbounded can_mint parent could otherwise mint
+  // an arbitrarily long-lived (e.g. multi-year) sub-key. This hard ceiling
+  // applies regardless of parent expiry.
+  if (requestedTtl > env.MAX_SUBKEY_TTL_SECONDS) {
+    return c.json(
+      {
+        error: "expires_in_seconds exceeds the maximum sub-key TTL",
+        max_ttl_seconds: env.MAX_SUBKEY_TTL_SECONDS,
+      },
+      400,
+    );
+  }
   const childExpSec = nowSec + requestedTtl;
   if (parent.expires_at) {
     const parentExpSec = Math.floor(

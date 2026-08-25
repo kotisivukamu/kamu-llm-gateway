@@ -69,6 +69,19 @@ const schema = z.object({
   // 1h = 3600s, the ADR's stated sub-key lifetime.
   DEFAULT_SUBKEY_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
 
+  // Absolute ceiling on a derived sub-key's TTL (ADR 0001 §7.1 / open
+  // question "Budget enforcement location" doesn't cover this directly, but
+  // §7.1's own framing does: an unbounded parent (expires_at IS NULL, e.g. a
+  // permanent studio/builder-queue service key) imposes no upper bound from
+  // the parent-clamp alone, so without a separate hard ceiling a can_mint
+  // parent could mint a multi-year sub-key. Enforced independently of the
+  // parent-TTL clamp below — whichever of (parent remaining, this ceiling) is
+  // tighter wins. 24h default: generous headroom over the ADR's stated 1h
+  // sub-key lifetime (§2/§10.4) for the longest legitimate case in the
+  // current caller set (a long build), while still bounding worst-case
+  // blast radius of a leaked/compromised sub-key to about a day.
+  MAX_SUBKEY_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
+
   // Per-parent derivation rate limiting (ADR 0001 §7.7). POST /api/keys/derive
   // is rate-limited per parent key: at most SUBKEY_DERIVE_RATE_PER_MIN mints per
   // minute, and at most SUBKEY_DERIVE_MAX_ACTIVE children alive at once
