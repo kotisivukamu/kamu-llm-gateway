@@ -1,0 +1,24 @@
+{
+  "imports": {
+    "@shared/": "../shared/",
+    "@std/assert": "jsr:@std/assert@1",
+    "@std/cli/parse_args": "jsr:@std/cli@1/parse-args",
+    "@hono/hono": "npm:hono@4.8.2",
+    "better-auth": "npm:better-auth@1.2.7",
+    "pg": "npm:pg@8.13.1",
+    "postgres": "npm:postgres@3.4.7",
+    "zod": "npm:zod@3.25.67"
+  },
+  "tasks": {
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-write --allow-sys --env-file --watch src/main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read --allow-write --allow-sys src/main.ts",
+    "test": "deno test --allow-net --allow-read --allow-write --allow-env --allow-sys",
+    "validate": "deno fmt --check && deno lint && deno check src/**/*.ts src/**/*.tsx"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "jsx": "precompile",
+    "jsxImportSource": "@hono/hono/jsx"
+  },
+  "nodeModulesDir": "auto"
+}
