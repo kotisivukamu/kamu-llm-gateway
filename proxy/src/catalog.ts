@@ -42,8 +42,20 @@ export interface ModelEntry {
   // explicitly so the fallback only guards future additions.
   cache_read_cost_per_mtok_usd?: number;
   cache_write_cost_per_mtok_usd?: number;
+  // The slug sent to the upstream provider when it differs from the
+  // client-facing slug (the MODELS key). Defaults to the client-facing slug
+  // when omitted. Set when a provider namespaces/renames a model the client
+  // knows by another name — e.g. tensorx.ai wants `z-ai/glm-5.3` where cortecs
+  // and opencode-zen accept the bare `glm-5.3`. The proxy rewrites the `model`
+  // field upstream-only; authz, cost, and metering keep the client-facing slug
+  // (ADR 0002). This is deliberately separate from request_overrides so the
+  // merge-ordering concern (model must win) is not crammed into the override
+  // map.
+  upstream_model_slug?: string;
   // Optional shallow-merge override applied to JSON request bodies before
-  // forwarding (e.g. silencing extended thinking on a specific Anthropic model).
+  // forwarding (e.g. silencing extended thinking on a specific Anthropic
+  // model). NOT for the `model` field — use upstream_model_slug for that;
+  // proxy.ts places `model` after the override merge so it always wins.
   request_overrides?: Record<string, unknown>;
 }
 
@@ -120,6 +132,20 @@ export const PROVIDERS: Record<string, ProviderEntry> = {
     base_url: "https://api.cortecs.ai",
     auth_style: "bearer",
     api_key_env_var: "CORTECS_API_KEY",
+    allowed_paths: OPENAI_COMPAT_PATHS,
+  },
+  // Tensorx (tensorx.ai, api.tensorx.ai) — OpenAI-compatible inference host.
+  // Namespaces its model ids with a vendor prefix (`z-ai/glm-5.3`, not
+  // `glm-5.3`); the bare slug 403s. Models routed here set
+  // `upstream_model_slug` so the proxy rewrites `model` on the wire while
+  // authz/metering keep the bare client-facing slug (ADR 0002). Most GLM/Qwen
+  // workloads route through cortecs instead (EU residency, one key fronts
+  // several backends); tensorx exists for models cortecs does not carry or
+  // where direct routing is wanted.
+  tensorx: {
+    base_url: "https://api.tensorx.ai",
+    auth_style: "bearer",
+    api_key_env_var: "TENSORX_API_KEY",
     allowed_paths: OPENAI_COMPAT_PATHS,
   },
 };
@@ -341,6 +367,32 @@ export const MODELS: Record<string, ModelEntry> = {
     cache_read_cost_per_mtok_usd: 0.6482,
     cache_write_cost_per_mtok_usd: 2.5927,
   },
+  // GLM 5.3 family. Routes through cortecs, which fronts tensorix (and
+  // berget) under the hood and accepts the bare slugs — so no
+  // upstream_model_slug is needed here. Cortecs' published EUR/Mtok converted
+  // at 1.1554 USD/EUR (the rate this catalog uses, see the cortecs block
+  // above). Cortecs publishes a cache-read rate but no cache-WRITE rate, so
+  // cache writes keep the assumed default of 1.0x input (a write is billed as
+  // a normal miss). GLM 5.3 is a thinking model — reasoning tokens ride inside
+  // completion_tokens and are priced at the output rate, same as the qwen
+  // reasoning models. The flash variant is multimodal (text+image in).
+  // ADR 0002 notes the tensorx-native route would set
+  // upstream_model_slug: "z-ai/glm-5.3" instead; cortecs is preferred for EU
+  // residency. (Moved from opencode-zen 2026-08-31.)
+  "glm-5.3": {
+    provider_slug: "cortecs",
+    input_cost_per_mtok_usd: 1.8151,
+    output_cost_per_mtok_usd: 4.6667,
+    cache_read_cost_per_mtok_usd: 0.4541,
+    cache_write_cost_per_mtok_usd: 1.8151,
+  },
+  "glm-5.3-flash": {
+    provider_slug: "cortecs",
+    input_cost_per_mtok_usd: 0.208,
+    output_cost_per_mtok_usd: 0.5188,
+    cache_read_cost_per_mtok_usd: 0.052,
+    cache_write_cost_per_mtok_usd: 0.208,
+  },
   "glm-5.2": {
     provider_slug: "cortecs",
     input_cost_per_mtok_usd: 1.24,
@@ -449,4 +501,29 @@ export function getProvider(slug: string): ProviderEntry | null {
 
 export function getModel(slug: string): ModelEntry | null {
   return MODELS[slug] ?? null;
+}
+
+// Rewrite the request body for upstream forwarding: apply the model's
+// `upstream_model_slug` (when the provider namespaces/renames it — ADR 0002)
+// and any `request_overrides`, with `model` placed LAST so the upstream slug
+// wins over both the client's `model` and any stray `model` in the overrides.
+// `clientModel` is what the client sent and stays the authority for
+// authz/cost/metering — only the bytes on the wire change.
+//
+// Pure (no I/O) so the merge-ordering invariant is testable without standing
+// up the gateway DB the full proxy route needs. Returns the original object
+// unchanged when no rewrite is needed, so un-routed/non-JSON bodies skip a
+// reserialize.
+export function mergeRequestBody(
+  clientModel: string,
+  original: Record<string, unknown>,
+): Record<string, unknown> {
+  const entry = getModel(clientModel);
+  const overrides = entry?.request_overrides ?? {};
+  const upstreamModel = entry?.upstream_model_slug ?? clientModel;
+  const needsRewrite = upstreamModel !== clientModel ||
+    Object.keys(overrides).length > 0;
+  return needsRewrite
+    ? { ...original, ...overrides, model: upstreamModel }
+    : original;
 }

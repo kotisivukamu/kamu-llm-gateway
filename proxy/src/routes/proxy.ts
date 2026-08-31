@@ -1,5 +1,10 @@
 import { Hono } from "@hono/hono";
-import { type AuthStyle, getModel, getProvider } from "../catalog.ts";
+import {
+  type AuthStyle,
+  getModel,
+  getProvider,
+  mergeRequestBody,
+} from "../catalog.ts";
 import {
   extractCredential,
   isModelAllowed,
@@ -161,11 +166,12 @@ proxy.all("/:provider_slug/*", async (c) => {
           );
         }
 
-        const overrides = modelInBody
-          ? getModel(modelInBody)?.request_overrides ?? {}
-          : {};
-        const merged = Object.keys(overrides).length > 0
-          ? { ...original, ...overrides }
+        // Rewrite `model` upstream-only when the provider namespaces/renames
+        // it (ADR 0002). modelInBody — the client-facing slug — stays the
+        // authority for authz (above), cost lookup, and the usage_log row
+        // (below). Only the bytes sent upstream change.
+        const merged = modelInBody
+          ? mergeRequestBody(modelInBody, original)
           : original;
 
         const newBody = JSON.stringify(merged);
