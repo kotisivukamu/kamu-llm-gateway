@@ -181,3 +181,40 @@ Deno.test("pollOnce: no rows / max_id null returns the same cursor", {
     restoreFetch();
   }
 });
+
+Deno.test(
+  "pollOnce: a row for a deleted key is skipped, the rest land, the cursor advances",
+  {
+    sanitizeOps: false,
+    sanitizeResources: false,
+  },
+  async () => {
+    // key_id is a foreign key: before the fix one such row failed the whole
+    // page, the cursor never advanced, and the ledger stalled for every key.
+    await resetDb();
+    const team = await seedTeam();
+    const keyId = await seedKey({ teamId: team.id, label: "live key" });
+    const row = (id: number, key: string) => ({
+      id,
+      key_id: key,
+      parent_key_id: null,
+      root_key_id: key,
+      model: "glm-5",
+      input_tokens: 1,
+      output_tokens: 1,
+      cost_usd: 0.000001,
+      created_at: "2026-09-23T12:00:00.000Z",
+    });
+    mockUsageEndpoint([row(1, crypto.randomUUID()), row(2, keyId)], 2);
+    try {
+      const cursor = await pollOnce(0);
+      assertEquals(cursor, 2);
+      const rows = await adminSql<{ id: number }[]>`
+      SELECT id::int FROM llm.usage_log ORDER BY id
+    `;
+      assertEquals(rows.map((r) => r.id), [2]);
+    } finally {
+      restoreFetch();
+    }
+  },
+);

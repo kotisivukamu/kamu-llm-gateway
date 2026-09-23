@@ -83,3 +83,21 @@ Deno.test("mergeRequestBody: missing catalog entry passes the body through uncha
   assert.equal(out, original);
   assert.equal(out.model, "z-ai/unknown-model");
 });
+
+Deno.test("every slug@provider variant sets upstream_model_slug", () => {
+  // Without it the proxy forwards `slug@provider` verbatim and the provider
+  // 404s (seen on prod for the @cortecs variants, 2026-09-23).
+  for (const [slug, entry] of Object.entries(MODELS)) {
+    if (!slug.includes("@")) continue;
+    assert.ok(entry.upstream_model_slug, `${slug} has no upstream_model_slug`);
+    assert.ok(
+      !entry.upstream_model_slug.includes("@"),
+      `${slug} forwards an @-slug upstream`,
+    );
+    assert.equal(
+      slug.split("@")[1],
+      entry.provider_slug,
+      `${slug} is pinned to a different provider than its suffix says`,
+    );
+  }
+});

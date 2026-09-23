@@ -122,17 +122,36 @@ export async function pollOnce(since: number): Promise<number> {
       // ledger stay empty. Naming the same 9 columns on both sides fixes the
       // arity without inventing metadata the satellite doesn't send; the
       // column defaults to NULL on insert, same as before this fix.
-      await adminSql`
+      //
+      // Rows whose key no longer exists are skipped, not inserted: key_id is
+      // a foreign key, so one such row would fail the whole page and the
+      // cursor would never advance past it, stalling the ledger for every
+      // key. A key is only hard-deleted when its team is (cascade), at which
+      // point its spend has no one to attribute to.
+      const result = await adminSql`
         INSERT INTO llm.usage_log
           (id, key_id, parent_key_id, root_key_id, model, cost_usd,
            tokens_in, tokens_out, created_at)
-        SELECT id, key_id, parent_key_id, root_key_id, model, cost_usd,
-               tokens_in, tokens_out, created_at
+        SELECT r.id, r.key_id, r.parent_key_id, r.root_key_id, r.model,
+               r.cost_usd, r.tokens_in, r.tokens_out, r.created_at
         FROM jsonb_populate_recordset(null::llm.usage_log, ${
         adminSql.json(rows)
-      })
+      }) r
+        WHERE EXISTS (SELECT 1 FROM llm.keys k WHERE k.id = r.key_id)
         ON CONFLICT (id) DO NOTHING
+        RETURNING id
       `;
+      const orphans = await adminSql<{ n: number }[]>`
+        SELECT COUNT(*)::int AS n
+        FROM jsonb_to_recordset(${adminSql.json(rows)}) AS r(key_id uuid)
+        WHERE NOT EXISTS (SELECT 1 FROM llm.keys k WHERE k.id = r.key_id)
+      `;
+      if (orphans[0].n > 0) {
+        log.warn("usage_poll: skipped rows for deleted keys", {
+          skipped: orphans[0].n,
+          inserted: result.count,
+        });
+      }
     }
 
     if (page.max_id === null || page.max_id <= cursor) break;

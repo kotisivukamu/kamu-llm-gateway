@@ -422,9 +422,12 @@ export const MODELS: Record<string, ModelEntry> = {
   // Moonshot rate).
   //
   // @cortecs: EUR/Mtok from cortecs GET /v1/models at 1.1554 USD/EUR; cache
-  // write = input (none published).
+  // write = input (none published). Every variant must set
+  // upstream_model_slug, even to the bare slug: without it the proxy forwards
+  // `slug@provider` verbatim and the provider 404s.
   "kimi-k2.6@cortecs": {
     provider_slug: "cortecs",
+    upstream_model_slug: "kimi-k2.6",
     input_cost_per_mtok_usd: 0.535,
     output_cost_per_mtok_usd: 2.9752,
     cache_read_cost_per_mtok_usd: 0.119,
@@ -432,6 +435,7 @@ export const MODELS: Record<string, ModelEntry> = {
   },
   "deepseek-v4-pro@cortecs": {
     provider_slug: "cortecs",
+    upstream_model_slug: "deepseek-v4-pro",
     input_cost_per_mtok_usd: 1.7943,
     output_cost_per_mtok_usd: 3.5887,
     cache_read_cost_per_mtok_usd: 0.4483,
