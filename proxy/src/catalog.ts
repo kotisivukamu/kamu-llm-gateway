@@ -12,7 +12,7 @@
 //   "bearer"    → Authorization: Bearer <key>  (OpenAI-compatible, most others)
 //   "both"      → both headers set             (hybrid aggregators that
 //                                               emulate both SDK conventions
-//                                               on the same base, e.g. opencode-zen)
+//                                               on the same base)
 export type AuthStyle = "x-api-key" | "bearer" | "both";
 
 export interface ProviderEntry {
@@ -46,7 +46,7 @@ export interface ModelEntry {
   // client-facing slug (the MODELS key). Defaults to the client-facing slug
   // when omitted. Set when a provider namespaces/renames a model the client
   // knows by another name — e.g. tensorx.ai wants `z-ai/glm-5.3` where cortecs
-  // and opencode-zen accept the bare `glm-5.3`. The proxy rewrites the `model`
+  // accepts the bare `glm-5.3`. The proxy rewrites the `model`
   // field upstream-only; authz, cost, and metering keep the client-facing slug
   // (ADR 0002). This is deliberately separate from request_overrides so the
   // merge-ordering concern (model must win) is not crammed into the override
@@ -73,13 +73,11 @@ const OPENAI_COMPAT_PATHS: RegExp[] = [
   /^\/v1\/embeddings$/,
 ];
 
-// OpenCode Zen exposes both shapes on the same base — OpenAI-compatible at
-// /v1/chat/completions for most models, Anthropic-compatible at /v1/messages
-// for the minimax-* family. Per https://opencode.ai/docs/go/.
-const OPENCODE_ZEN_PATHS: RegExp[] = [
-  /^\/v1\/chat\/completions$/,
-  /^\/v1\/messages$/,
-  /^\/v1\/models(?:\/.*)?$/,
+// Speech-to-text (Whisper) for voice notes and dashboard voice input. Only
+// OpenAI serves it; the body is multipart audio and passes through as-is.
+const OPENAI_PATHS: RegExp[] = [
+  ...OPENAI_COMPAT_PATHS,
+  /^\/v1\/audio\/transcriptions$/,
 ];
 
 export const PROVIDERS: Record<string, ProviderEntry> = {
@@ -93,7 +91,7 @@ export const PROVIDERS: Record<string, ProviderEntry> = {
     base_url: "https://api.openai.com",
     auth_style: "bearer",
     api_key_env_var: "OPENAI_API_KEY",
-    allowed_paths: OPENAI_COMPAT_PATHS,
+    allowed_paths: OPENAI_PATHS,
   },
   deepseek: {
     base_url: "https://api.deepseek.com",
@@ -107,41 +105,24 @@ export const PROVIDERS: Record<string, ProviderEntry> = {
     api_key_env_var: "MOONSHOT_API_KEY",
     allowed_paths: OPENAI_COMPAT_PATHS,
   },
-  // sst's hosted aggregator. Single key fronts a curated set of community
-  // models (kimi, deepseek, glm, mimo, qwen, minimax). Per its docs the base
-  // is /zen/go — both OpenAI-shape and Anthropic-shape endpoints sit under it.
-  // Set both auth headers because /v1/messages expects x-api-key while
-  // /v1/chat/completions expects Bearer.
-  //
-  // Zen serves several of these models from China-hosted inference, which we
-  // can't offer customers without an explicit opt-in. The GLM / MiniMax /
-  // DeepSeek-V4 slugs therefore moved to cortecs (EU-only) below; zen keeps
-  // the rest (qwen3.7-plus isn't on cortecs at all; glm-5 / minimax-m2.7 are
-  // older generations we haven't repointed).
-  "opencode-zen": {
-    base_url: "https://opencode.ai/zen/go",
-    auth_style: "both",
-    api_key_env_var: "OPENCODE_ZEN_API_KEY",
-    allowed_paths: OPENCODE_ZEN_PATHS,
-  },
   // Cortecs (cortecs.ai) — EU-only inference aggregator, OpenAI-compatible
   // API. All routed providers (tensorix, scaleway, inceptron, berget) run in
-  // the EU, which is why the GLM / MiniMax slugs live here instead of
-  // opencode-zen.
+  // the EU, which is why the GLM / MiniMax slugs live here. OpenCode Zen was
+  // dropped on 2026-09-09: its /zen/go endpoint became coding-agent-only
+  // (400 MissingSessionID without an opencode/pi session) and everything we
+  // used it for is on cortecs or a native provider.
   cortecs: {
     base_url: "https://api.cortecs.ai",
     auth_style: "bearer",
     api_key_env_var: "CORTECS_API_KEY",
     allowed_paths: OPENAI_COMPAT_PATHS,
   },
-  // Tensorx (tensorx.ai, api.tensorx.ai) — OpenAI-compatible inference host.
-  // Namespaces its model ids with a vendor prefix (`z-ai/glm-5.3`, not
-  // `glm-5.3`); the bare slug 403s. Models routed here set
-  // `upstream_model_slug` so the proxy rewrites `model` on the wire while
-  // authz/metering keep the bare client-facing slug (ADR 0002). Most GLM/Qwen
-  // workloads route through cortecs instead (EU residency, one key fronts
-  // several backends); tensorx exists for models cortecs does not carry or
-  // where direct routing is wanted.
+  // Tensorx (tensorx.ai, api.tensorx.ai) — EU-hosted, OpenAI-compatible, a
+  // LiteLLM-style router. Namespaces its model ids with a vendor prefix
+  // (`z-ai/glm-5.3`, `moonshotai/kimi-k2.6`); the bare slug 403s. No header
+  // picks a backend: tensorx routes each id itself. Reached only through the
+  // `<slug>@tensorx` variants at the end of MODELS, which set
+  // `upstream_model_slug` to the namespaced id (ADR 0002).
   tensorx: {
     base_url: "https://api.tensorx.ai",
     auth_style: "bearer",
@@ -275,19 +256,16 @@ export const MODELS: Record<string, ModelEntry> = {
     cache_read_cost_per_mtok_usd: 0.095,
     cache_write_cost_per_mtok_usd: 0.95,
   },
+  // kimi-k2.5 moved to cortecs 2026-09-23: Moonshot no longer serves it
+  // (404 resource_not_found; absent from GET /v1/models) and moonshot-v1-32k
+  // was dropped for the same reason. Cortecs EUR 0.444 in / 2.485 out / cache
+  // read 0.111 at 1.1554 USD/EUR; cache write = input (none published).
   "kimi-k2.5": {
-    provider_slug: "moonshot",
-    input_cost_per_mtok_usd: 0.6,
-    output_cost_per_mtok_usd: 2.5,
-    cache_read_cost_per_mtok_usd: 0.06,
-    cache_write_cost_per_mtok_usd: 0.6,
-  },
-  "moonshot-v1-32k": {
-    provider_slug: "moonshot",
-    input_cost_per_mtok_usd: 1,
-    output_cost_per_mtok_usd: 3,
-    cache_read_cost_per_mtok_usd: 0.1,
-    cache_write_cost_per_mtok_usd: 1,
+    provider_slug: "cortecs",
+    input_cost_per_mtok_usd: 0.513,
+    output_cost_per_mtok_usd: 2.8712,
+    cache_read_cost_per_mtok_usd: 0.1282,
+    cache_write_cost_per_mtok_usd: 0.513,
   },
 
   // --- DeepSeek (native, api.deepseek.com) --------------------------------
@@ -376,9 +354,8 @@ export const MODELS: Record<string, ModelEntry> = {
   // a normal miss). GLM 5.3 is a thinking model — reasoning tokens ride inside
   // completion_tokens and are priced at the output rate, same as the qwen
   // reasoning models. The flash variant is multimodal (text+image in).
-  // ADR 0002 notes the tensorx-native route would set
-  // upstream_model_slug: "z-ai/glm-5.3" instead; cortecs is preferred for EU
-  // residency. (Moved from opencode-zen 2026-08-31.)
+  // The tensorx-native route is the `glm-5.3@tensorx` variant below.
+  // (Moved from opencode-zen 2026-08-31.)
   "glm-5.3": {
     provider_slug: "cortecs",
     input_cost_per_mtok_usd: 1.8151,
@@ -415,83 +392,156 @@ export const MODELS: Record<string, ModelEntry> = {
     cache_write_cost_per_mtok_usd: 0.41,
   },
 
-  // --- OpenCode Zen aggregator --------------------------------------------
-  // Its own namespace: these slugs are Zen's, not the upstream vendors'.
-  // Prices from opencode.ai/docs/zen (what Zen charges us, not the vendor).
-  // Zen's GLM / MiniMax M3 / DeepSeek V4 routing is China-hosted, so those
-  // slugs moved to cortecs above (deepseek-v4-* dropped entirely — the native
-  // deepseek provider covers them). Routing is decided by the URL's provider
-  // slug, never by this map —
-  // MODELS is keyed by slug alone and only feeds authz/overrides/cost
-  // metadata. The 2026-08-06 legacy-studio incident (duplicate slugs under a
-  // keyless provider row in the DB) cannot recur here: keys are env-only and
-  // the provider is always explicit in the path.
-  // Zen's docs (opencode.ai/docs/zen) publish explicit per-model cached-read
-  // AND cached-write rates for the Qwen family; the Qwen entries below use
-  // those verbatim (verified 2026-08-20). The GLM-5 / MiniMax-M2.7 rows predate
-  // that published table and keep the ASSUMED defaults (read = 0.1x input,
-  // write = 1.0x input) — the docs DO publish a cached-read rate for them now
-  // (GLM-5 $0.20, MiniMax-M2.7 $0.06) that these entries have not yet been
-  // updated to; priced conservatively until reconciled.
+  // GLM-5 and MiniMax-M2.7 (older generations) moved from OpenCode Zen to
+  // cortecs on 2026-09-09. Rates are cortecs' EUR/Mtok (GET /v1/models:
+  // glm-5 0.887/2.84 cache-read 0.222; minimax-m2.7 0.6/2.4, no cache rate
+  // published so the ASSUMED defaults apply: read = 0.1x, write = 1.0x)
+  // converted at 1.1554 USD/EUR like the rest of the cortecs rows.
   "glm-5": {
-    provider_slug: "opencode-zen",
-    input_cost_per_mtok_usd: 1,
-    output_cost_per_mtok_usd: 3.2,
-    cache_read_cost_per_mtok_usd: 0.1,
-    cache_write_cost_per_mtok_usd: 1,
+    provider_slug: "cortecs",
+    input_cost_per_mtok_usd: 1.0248,
+    output_cost_per_mtok_usd: 3.2813,
+    cache_read_cost_per_mtok_usd: 0.2565,
+    cache_write_cost_per_mtok_usd: 1.0248,
   },
   "minimax-m2.7": {
-    provider_slug: "opencode-zen",
-    input_cost_per_mtok_usd: 0.3,
-    output_cost_per_mtok_usd: 1.2,
-    cache_read_cost_per_mtok_usd: 0.03,
-    cache_write_cost_per_mtok_usd: 0.3,
+    provider_slug: "cortecs",
+    input_cost_per_mtok_usd: 0.6932,
+    output_cost_per_mtok_usd: 2.773,
+    cache_read_cost_per_mtok_usd: 0.0693,
+    cache_write_cost_per_mtok_usd: 0.6932,
   },
-  // Zen's docs (opencode.ai/docs/zen) now publish explicit cache-read AND
-  // cache-write rates for the Qwen / Max family (previously only the assumed
-  // defaults were used). Verified 2026-08-20 against the live pricing table;
-  // the live /v1/models endpoint also lists qwen3.8-max (and qwen3.7-max) even
-  // though the docs prose only lists Qwen3.7 Max, so the 3.8 entry inherits
-  // the documented 3.7-Max rates until Zen publishes a distinct 3.8 row.
-  // A live probe through this proxy (POST /llm/opencode-zen/v1/chat/completions
-  // with model=qwen3.8-max) answers 200 and returns a normal usage block.
-  // qwen3.8-max is a thinking model (returns reasoning_content / thinking
-  // blocks); the reasoning tokens ride inside completion_tokens and are
-  // priced at the output rate, same as Qwen3.7 Max.
-  "qwen3.8-max": {
-    provider_slug: "opencode-zen",
-    input_cost_per_mtok_usd: 2.5,
-    output_cost_per_mtok_usd: 7.5,
-    cache_read_cost_per_mtok_usd: 0.5,
-    cache_write_cost_per_mtok_usd: 3.125,
+
+  // --- Provider-pinned variants (`<slug>@<provider>`, ADR 0002) -----------
+  // The bare slug is the platform-routed default above; `@provider` pins a
+  // specific provider. The OpenAI/Anthropic protocols give the client only the
+  // `model` string, so the pin has to live in the name. Each variant is its
+  // own entry: authz, pricing and usage_log.model all key on the full
+  // `slug@provider`. Only providers that serve the model and publish a price
+  // get a variant (no @moonshot for kimi-k3 / kimi-k2.7-code: no verified
+  // Moonshot rate).
+  //
+  // @cortecs: EUR/Mtok from cortecs GET /v1/models at 1.1554 USD/EUR; cache
+  // write = input (none published).
+  "kimi-k2.6@cortecs": {
+    provider_slug: "cortecs",
+    input_cost_per_mtok_usd: 0.535,
+    output_cost_per_mtok_usd: 2.9752,
+    cache_read_cost_per_mtok_usd: 0.119,
+    cache_write_cost_per_mtok_usd: 0.535,
   },
-  "qwen3.7-max": {
-    provider_slug: "opencode-zen",
-    input_cost_per_mtok_usd: 2.5,
-    output_cost_per_mtok_usd: 7.5,
-    cache_read_cost_per_mtok_usd: 0.5,
-    cache_write_cost_per_mtok_usd: 3.125,
+  "deepseek-v4-pro@cortecs": {
+    provider_slug: "cortecs",
+    input_cost_per_mtok_usd: 1.7943,
+    output_cost_per_mtok_usd: 3.5887,
+    cache_read_cost_per_mtok_usd: 0.4483,
+    cache_write_cost_per_mtok_usd: 1.7943,
   },
-  "qwen3.7-plus": {
-    provider_slug: "opencode-zen",
-    input_cost_per_mtok_usd: 0.4,
-    output_cost_per_mtok_usd: 1.6,
-    cache_read_cost_per_mtok_usd: 0.04,
+  // @tensorx: USD/token from tensorx GET /v1/model/info (2026-09-23) x 1e6;
+  // cache write = input (tensorx publishes none).
+  "kimi-k3@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "moonshotai/kimi-k3",
+    input_cost_per_mtok_usd: 3.0,
+    output_cost_per_mtok_usd: 15.0,
+    cache_read_cost_per_mtok_usd: 0.75,
+    cache_write_cost_per_mtok_usd: 3.0,
+  },
+  "kimi-k2.7-code@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "moonshotai/kimi-k2.7-code",
+    input_cost_per_mtok_usd: 1.25,
+    output_cost_per_mtok_usd: 4.5,
+    cache_read_cost_per_mtok_usd: 0.3125,
+    cache_write_cost_per_mtok_usd: 1.25,
+  },
+  "kimi-k2.6@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "moonshotai/kimi-k2.6",
+    input_cost_per_mtok_usd: 1.0,
+    output_cost_per_mtok_usd: 4.0,
+    cache_read_cost_per_mtok_usd: 0.25,
+    cache_write_cost_per_mtok_usd: 1.0,
+  },
+  "kimi-k2.5@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "moonshotai/kimi-k2.5",
+    input_cost_per_mtok_usd: 0.5,
+    output_cost_per_mtok_usd: 2.8,
+    cache_read_cost_per_mtok_usd: 0.125,
     cache_write_cost_per_mtok_usd: 0.5,
   },
-  "qwen3.6-plus": {
-    provider_slug: "opencode-zen",
-    input_cost_per_mtok_usd: 0.5,
-    output_cost_per_mtok_usd: 3,
-    cache_read_cost_per_mtok_usd: 0.05,
-    cache_write_cost_per_mtok_usd: 0.625,
+  "deepseek-v4-pro@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "deepseek/deepseek-v4-pro",
+    input_cost_per_mtok_usd: 1.75,
+    output_cost_per_mtok_usd: 3.5,
+    cache_read_cost_per_mtok_usd: 0.4375,
+    cache_write_cost_per_mtok_usd: 1.75,
   },
-  "qwen3.5-plus": {
-    provider_slug: "opencode-zen",
+  "qwen3.8-27b@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "qwen/qwen3.8-27b",
+    input_cost_per_mtok_usd: 0.4,
+    output_cost_per_mtok_usd: 2.4,
+    cache_read_cost_per_mtok_usd: 0.1,
+    cache_write_cost_per_mtok_usd: 0.4,
+  },
+  "qwen3.8-2.4t-a95b@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "qwen/qwen3.8-2.4t-a95b",
+    input_cost_per_mtok_usd: 2.5,
+    output_cost_per_mtok_usd: 6.0,
+    cache_read_cost_per_mtok_usd: 0.625,
+    cache_write_cost_per_mtok_usd: 2.5,
+  },
+  "glm-5.3@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "z-ai/glm-5.3",
+    input_cost_per_mtok_usd: 1.75,
+    output_cost_per_mtok_usd: 4.5,
+    cache_read_cost_per_mtok_usd: 0.4375,
+    cache_write_cost_per_mtok_usd: 1.75,
+  },
+  "glm-5.3-flash@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "z-ai/glm-5.3-flash",
     input_cost_per_mtok_usd: 0.2,
-    output_cost_per_mtok_usd: 1.2,
-    cache_read_cost_per_mtok_usd: 0.02,
-    cache_write_cost_per_mtok_usd: 0.25,
+    output_cost_per_mtok_usd: 0.5,
+    cache_read_cost_per_mtok_usd: 0.05,
+    cache_write_cost_per_mtok_usd: 0.2,
+  },
+  "glm-5.2@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "z-ai/glm-5.2",
+    input_cost_per_mtok_usd: 1.5,
+    output_cost_per_mtok_usd: 4.5,
+    cache_read_cost_per_mtok_usd: 0.375,
+    cache_write_cost_per_mtok_usd: 1.5,
+  },
+  "glm-5.1@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "z-ai/glm-5.1",
+    input_cost_per_mtok_usd: 1.4,
+    output_cost_per_mtok_usd: 4.4,
+    cache_read_cost_per_mtok_usd: 0.35,
+    cache_write_cost_per_mtok_usd: 1.4,
+  },
+  "glm-5@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "z-ai/glm-5",
+    input_cost_per_mtok_usd: 1.0,
+    output_cost_per_mtok_usd: 3.2,
+    cache_read_cost_per_mtok_usd: 0.25,
+    cache_write_cost_per_mtok_usd: 1.0,
+  },
+  "minimax-m3@tensorx": {
+    provider_slug: "tensorx",
+    upstream_model_slug: "minimax/minimax-m3",
+    input_cost_per_mtok_usd: 0.4,
+    output_cost_per_mtok_usd: 2.0,
+    cache_read_cost_per_mtok_usd: 0.1,
+    cache_write_cost_per_mtok_usd: 0.4,
   },
 };
 

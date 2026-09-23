@@ -1,6 +1,7 @@
 # ADR 0002 — Client-facing vs. upstream model slugs
 
-- **Status:** Accepted — 2026-08-31
+- **Status:** Accepted — 2026-08-31; "Boundary" amended 2026-09-23 (see
+  "Amendment 2026-09-23: provider-pinned variants" at the end)
 - **Builds on:** ADR 0001 (the key is the product; client-facing slugs are
   the product-facing name)
 
@@ -134,3 +135,32 @@ provider plumbing, routing = platform decision.**
   `kotisivukamu/llm-proxy` does today, for its EU data-residency story).
 - The same change applies to the legacy `kotisivukamu/llm-proxy` until it
   sunsets, so the two catalogs do not drift on this behavior.
+
+## Amendment 2026-09-23: provider-pinned variants (`slug@provider`)
+
+The "Boundary" section above said clients cannot pin a provider. That stays
+true for **upstream** slugs (`z-ai/glm-5.3` still 403s at authz), but the
+platform now offers **curated pinned variants** as their own client-facing
+slugs: `kimi-k2.6@tensorx`, `kimi-k2.6@cortecs`, `glm-5.3@tensorx`, ...
+
+- **Why in the name.** The OpenAI and Anthropic wire protocols give the client
+  exactly one routing input, the `model` string. There is no field or header a
+  generic SDK sends for "which provider", so a pin has to be expressible in
+  the model name or it cannot be expressed at all.
+- **Still catalog entries, not parsing.** Nothing splits on `@`. Each variant
+  is a full `ModelEntry` with its own `provider_slug`, `upstream_model_slug`
+  and prices, so authz, cost and `usage_log.model` key on the exact
+  `slug@provider` atom and each provider's rate is billed correctly. A key
+  allowlisting `kimi-k2.6` does not grant `kimi-k2.6@tensorx`; `*` grants all.
+- **The bare slug stays the platform-routed default**, so moving the default
+  between providers remains a one-field catalog change that no client sees.
+- **`@` as the separator**, because `-` is already part of model names
+  (`glm-5.3-flash` would read like a provider suffix).
+- **Variants exist only where the provider serves the model and publishes a
+  price** (cortecs and tensorx both expose prices via their APIs); no variant
+  is added with a guessed rate.
+- **tensorx needs no routing header.** It is a LiteLLM-style router that picks
+  its own backend per namespaced id (`moonshotai/kimi-k2.6`); the only
+  requirement is the namespaced upstream slug, which `upstream_model_slug`
+  already covers. A per-model upstream-headers field was considered and not
+  added until a provider actually needs one.
