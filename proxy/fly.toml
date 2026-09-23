@@ -4,15 +4,26 @@ kill_signal = "SIGTERM"
 kill_timeout = "15s"
 
 [deploy]
-  strategy = "bluegreen"
+  # Not bluegreen: Fly doesn't support bluegreen with volumes. One machine, so
+  # a deploy is a short restart.
+  strategy = "rolling"
 
 [env]
   PORT = "8301"
+  # The usage buffer must survive restarts: api's poller keys llm.usage_log on
+  # this SQLite row id and resumes from MAX(id), so a wiped file restarting ids
+  # at 1 would be silently skipped. Also why this app stays at ONE machine.
+  DB_PATH = "/data/llm-proxy.db"
   # KamuStatus telemetry. Both values are non-secret by design: the ingest key
   # is a public write-only DSN-style key (the browser SDK puts it in page
   # source), and a heartbeat token only lets someone fake an "up" signal.
   KAMUSTATUS_INGEST_URL = "https://kamustatus-ingest.fly.dev"
   KAMUSTATUS_INGEST_KEY = "ksts_ef6c7507108d4236828c7eaa3c094665aa62935a25294a7f9eaa88224fc3d998"
+
+[mounts]
+  source = "proxy_data"
+  destination = "/data"
+  initial_size = "1gb"
 
 [http_service]
   internal_port = 8301

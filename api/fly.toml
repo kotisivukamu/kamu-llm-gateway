@@ -1,0 +1,39 @@
+# Control-plane API (kamu-llm-gateway-api). Deployed by .github/workflows/release.yml
+# from a prebuilt image; build context is the repo root (see api/Dockerfile).
+# Secrets come from Doppler kamu-llm-proxy/prd_api.
+
+app = "kamu-llm-gateway-api"
+primary_region = "arn"
+kill_signal = "SIGTERM"
+kill_timeout = "15s"
+
+[deploy]
+  strategy = "bluegreen"
+
+[env]
+  PORT = "8300"
+  # The usage poller pulls the proxy's buffer over Fly 6PN.
+  LLM_PROXY_URL = "http://kamu-llm-gateway-proxy.internal:8301"
+
+[http_service]
+  internal_port = 8300
+  force_https = true
+  # The usage poller runs in-process, so machines must not auto-stop.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[restart]]
+  policy = "always"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
