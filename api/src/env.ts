@@ -73,7 +73,7 @@ const schema = z.object({
   // question "Budget enforcement location" doesn't cover this directly, but
   // §7.1's own framing does: an unbounded parent (expires_at IS NULL, e.g. a
   // permanent studio/builder-queue service key) imposes no upper bound from
-  // the parent-clamp alone, so without a separate hard ceiling a can_mint
+  // the parent-clamp alone, so without a separate hard ceiling a
   // parent could mint a multi-year sub-key. Enforced independently of the
   // parent-TTL clamp below — whichever of (parent remaining, this ceiling) is
   // tighter wins. 24h default: generous headroom over the ADR's stated 1h
@@ -86,7 +86,7 @@ const schema = z.object({
   // is rate-limited per parent key: at most SUBKEY_DERIVE_RATE_PER_MIN mints per
   // minute, and at most SUBKEY_DERIVE_MAX_ACTIVE children alive at once
   // (expired/revoked children don't count toward the cap). Bounds the DB/cache
-  // impact of a runaway script or a compromised can_mint key.
+  // impact of a runaway script or a compromised parent key.
   SUBKEY_DERIVE_RATE_PER_MIN: z.coerce.number().int().positive().default(60),
   SUBKEY_DERIVE_MAX_ACTIVE: z.coerce.number().int().positive().default(1000),
 
@@ -98,15 +98,6 @@ const schema = z.object({
   // this to expose it on a cache-config endpoint; the signing path does not
   // read it.
   KEY_META_CACHE_TTL_SEC: z.coerce.number().int().positive().default(10),
-
-  // Internal-caller boundary for POST /api/keys/derive (ADR 0001, open
-  // question "internal-caller authz to the gateway", resolved 2026-08-25): we
-  // never issue can_mint to external orgs, so derive additionally requires
-  // the parent key's team_id to equal this fixed internal-platform org id, on
-  // top of the existing can_mint check. This is the llm.teams.id (not the
-  // KamuID org id) of the one team that owns every can_mint key (studio,
-  // builder-queue, the kamuhub agent).
-  INTERNAL_PLATFORM_TEAM_ID: z.string().min(1),
 
   // Control-plane poller (ADR 0001 §8/§9): pulls the proxy satellite's local
   // usage buffer (GET /usage) into the durable llm.usage_log table. Base URL

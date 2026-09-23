@@ -29,8 +29,8 @@ export const auth = betterAuth({
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BASE_URL,
   session: {
-    // Shorter than better-auth's 7-day default: this app mints/revokes
-    // can_mint keys, so admin sessions stay tight.
+    // Shorter than better-auth's 7-day default: this is a cross-org superuser
+    // surface that mints/revokes keys, so admin sessions stay tight.
     expiresIn: 60 * 60 * 12, // 12h
   },
 });

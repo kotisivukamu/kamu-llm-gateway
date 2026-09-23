@@ -1,6 +1,5 @@
 import "./env.ts";
 import { adminSql } from "../../config/db.ts";
-import { INTERNAL_PLATFORM_TEAM_ID } from "./env.ts";
 
 // Test-only DB helpers against the real Postgres started for the regression
 // suite (see README "Running tests"). Uses the owner pool (adminSql) directly
@@ -21,8 +20,7 @@ export interface TestTeam {
 
 /**
  * Insert a team (KamuID org projection). Random org id per call so tests
- * don't collide; pass `id`/`kamuidOrgId` to pin them (used for the fixed
- * internal-platform team below).
+ * don't collide; pass `id`/`kamuidOrgId` to pin them.
  */
 export async function seedTeam(
   opts: { id?: string; kamuidOrgId?: string; name?: string } = {},
@@ -41,15 +39,6 @@ export async function seedTeam(
       RETURNING id
     `;
   return { id: row.id, kamuidOrgId };
-}
-
-/** The fixed internal-platform team the derive tenant-boundary check requires. */
-export async function seedInternalPlatformTeam(): Promise<TestTeam> {
-  return await seedTeam({
-    id: INTERNAL_PLATFORM_TEAM_ID,
-    kamuidOrgId: "org_internal_platform",
-    name: "Internal Platform",
-  });
 }
 
 export async function addTeamMember(
@@ -73,7 +62,6 @@ export interface SeedKeyOpts {
   models?: string[];
   budgetUsd?: number | null;
   status?: "active" | "revoked";
-  canMint?: boolean;
   parentKeyId?: string | null;
   rootKeyId?: string | null;
   expiresAt?: string | null;
@@ -85,12 +73,12 @@ export async function seedKey(opts: SeedKeyOpts): Promise<string> {
   const [row] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
       (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-       status, can_mint, parent_key_id, root_key_id, expires_at, created_by)
+       status, parent_key_id, root_key_id, expires_at, created_by)
     VALUES
       (${opts.teamId}, ${opts.label ?? "seed key"}, ${opts.keyHash ?? null},
        ${opts.prefix ?? null}, ${opts.keyType ?? "top"},
        ${opts.models ?? ["*"]}, ${opts.budgetUsd ?? null},
-       ${opts.status ?? "active"}, ${opts.canMint ?? false},
+       ${opts.status ?? "active"},
        ${opts.parentKeyId ?? null}, ${opts.rootKeyId ?? null},
        ${opts.expiresAt ?? null}, ${opts.createdBy ?? null})
     RETURNING id

@@ -1,7 +1,7 @@
 import "./support/env.ts";
 import { assertEquals } from "@std/assert";
 import { buildTestApp } from "./support/app.ts";
-import { adminSql, resetDb, seedInternalPlatformTeam } from "./support/db.ts";
+import { adminSql, resetDb, seedTeam } from "./support/db.ts";
 import { generateTopLevelKey } from "../lib/keys.ts";
 import { env } from "../env.ts";
 
@@ -10,22 +10,22 @@ import { env } from "../env.ts";
 // derive handler. Before the fix, the ONLY TTL clamp was "child cannot outlive
 // its parent" (SS7.1) — which imposes no bound at all when the parent is
 // UNBOUNDED (expires_at IS NULL, the permanent-service-key case, e.g. a
-// studio/builder-queue key). A can_mint parent with no expiry could mint an
+// studio/builder-queue key). A parent with no expiry could mint an
 // arbitrarily long-lived (multi-year) sub-key. The fix adds a hard ceiling
 // (MAX_SUBKEY_TTL_SECONDS, test env = 86400s/24h) independent of the
 // parent-relative clamp, and verifies BOTH clamps are enforced with correct
 // precedence (whichever of "parent remaining" and "the absolute ceiling" is
 // tighter wins).
 
-async function mintCanMintParent(
+async function mintParent(
   teamId: string,
   expiresAt: string | null,
 ): Promise<string> {
   const { secret, hash, prefix } = await generateTopLevelKey();
   const [row] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
-      (team_id, label, key_hash, prefix, key_type, models, status, can_mint, expires_at)
-    VALUES (${teamId}, 'ttl-test parent', ${hash}, ${prefix}, 'top', '{"*"}', 'active', true, ${expiresAt})
+      (team_id, label, key_hash, prefix, key_type, models, status, expires_at)
+    VALUES (${teamId}, 'ttl-test parent', ${hash}, ${prefix}, 'top', '{"*"}', 'active', ${expiresAt})
     RETURNING id
   `;
   await adminSql`UPDATE llm.keys SET root_key_id = id WHERE id = ${row.id}`;
@@ -52,8 +52,8 @@ Deno.test(
   { sanitizeOps: false, sanitizeResources: false },
   async () => {
     await resetDb();
-    const team = await seedInternalPlatformTeam();
-    const secret = await mintCanMintParent(team.id, null); // unbounded parent
+    const team = await seedTeam();
+    const secret = await mintParent(team.id, null); // unbounded parent
     const app = buildTestApp();
 
     const twoYears = 2 * 365 * 24 * 3600;
@@ -74,8 +74,8 @@ Deno.test("derive: unbounded parent + TTL just under the ceiling succeeds", {
   sanitizeResources: false,
 }, async () => {
   await resetDb();
-  const team = await seedInternalPlatformTeam();
-  const secret = await mintCanMintParent(team.id, null);
+  const team = await seedTeam();
+  const secret = await mintParent(team.id, null);
   const app = buildTestApp();
 
   const res = await derive(app, secret, env.MAX_SUBKEY_TTL_SECONDS - 60);
@@ -87,8 +87,8 @@ Deno.test(
   { sanitizeOps: false, sanitizeResources: false },
   async () => {
     await resetDb();
-    const team = await seedInternalPlatformTeam();
-    const secret = await mintCanMintParent(team.id, null);
+    const team = await seedTeam();
+    const secret = await mintParent(team.id, null);
     const app = buildTestApp();
 
     const res = await derive(app, secret, env.MAX_SUBKEY_TTL_SECONDS);
@@ -101,8 +101,8 @@ Deno.test("derive: short TTL under both clamps succeeds", {
   sanitizeResources: false,
 }, async () => {
   await resetDb();
-  const team = await seedInternalPlatformTeam();
-  const secret = await mintCanMintParent(team.id, null);
+  const team = await seedTeam();
+  const secret = await mintParent(team.id, null);
   const app = buildTestApp();
 
   const res = await derive(app, secret, 60);
@@ -120,9 +120,9 @@ Deno.test(
     // parent-relative check, NOT silently allowed because it's under the
     // absolute ceiling.
     await resetDb();
-    const team = await seedInternalPlatformTeam();
+    const team = await seedTeam();
     const parentExpiresAt = new Date(Date.now() + 100_000).toISOString();
-    const secret = await mintCanMintParent(team.id, parentExpiresAt);
+    const secret = await mintParent(team.id, parentExpiresAt);
     const app = buildTestApp();
 
     const res = await derive(app, secret, 200);
@@ -143,10 +143,10 @@ Deno.test(
     // ceiling must be the one that fires, even though the parent-relative clamp
     // alone would have allowed it.
     await resetDb();
-    const team = await seedInternalPlatformTeam();
+    const team = await seedTeam();
     const parentExpiresAt = new Date(Date.now() + 365 * 24 * 3600 * 1000)
       .toISOString();
-    const secret = await mintCanMintParent(team.id, parentExpiresAt);
+    const secret = await mintParent(team.id, parentExpiresAt);
     const app = buildTestApp();
 
     const res = await derive(app, secret, env.MAX_SUBKEY_TTL_SECONDS + 3600);
@@ -164,8 +164,8 @@ Deno.test(
   { sanitizeOps: false, sanitizeResources: false },
   async () => {
     await resetDb();
-    const team = await seedInternalPlatformTeam();
-    const secret = await mintCanMintParent(team.id, null);
+    const team = await seedTeam();
+    const secret = await mintParent(team.id, null);
     const app = buildTestApp();
 
     const res = await app.request("/api/keys/derive", {

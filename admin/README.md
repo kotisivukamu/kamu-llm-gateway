@@ -9,13 +9,13 @@ serves.
 
 ## Why this exists, and why it's separate from kamuhub
 
-See `docs/adr/0001-llm-gateway-resource-server.md`'s "Open questions" section,
-`can_mint` provisioning, superseded 2026-08-25. Short version: `can_mint` key
-issuance is a cross-org, no-owning-org, platform-operator action. Every other
-grant in this system (`llm.keys.create`, `llm.keys.revoke`) is a per-org action
-that fits kamuhub's grant model; this one doesn't, so it gets its own surface
-with its own (separate, non-KamuID) auth instead of being bent into the grant
-model.
+Platform operators need a cross-org view of every key and the usage ledger, and
+a way to mint/revoke keys in any org (e.g. keys for platform services) outside
+kamuhub's per-org grant model (`llm.keys.create`, `llm.keys.revoke`). That is a
+superuser capability with no owning org, so it gets its own surface with its own
+(separate, non-KamuID) auth instead of being bent into the grant model. (It was
+originally built for `can_mint` key provisioning; `can_mint` was removed
+2026-09-23, see ADR 0001.)
 
 ## Running locally
 
@@ -92,8 +92,8 @@ docs, against a throwaway local Postgres (`docker run postgres:16`), on
   internal-only Fly app, but a future hardening pass could add an explicit
   reject on that one path if that residual is ever a concern).
 - Session cookie TTL is 12h (`session.expiresIn` in `src/lib/auth.ts`), shorter
-  than better-auth's 7-day default — this app mints/revokes `can_mint` keys, so
-  sessions stay tight.
+  than better-auth's 7-day default — this app mints/revokes keys across every
+  org, so sessions stay tight.
 
 **2FA**: not built. If/when it's needed, evaluate `better-auth`'s official
 `twoFactor` plugin first — the base library already proved compatible with Deno,
@@ -147,7 +147,7 @@ across the whole platform.
   change with its own hot-path-latency considerations (ADR §10) that deserves
   its own pass, not a rushed add-on here.
 
-### Feature 3 — `can_mint` key provisioning
+### Feature 3 — cross-org key provisioning
 
 `GET/POST /keys` (HTML) and `GET/POST /api/keys`, `POST /api/keys/:id/revoke`
 (JSON). Mint inserts a `key_type='top'` row exactly like
@@ -155,8 +155,6 @@ across the whole platform.
 shape, duplicated in `src/lib/keys.ts` rather than imported — see that file's
 header comment for why). Revoke runs the identical cascade query
 (`status='revoked' WHERE id = $1 OR root_key_id = $1`) as `api/`'s revoke route.
-See `docs/adr/0001-llm-gateway-resource-server.md`'s superseded-decision note
-for why this lives here instead of behind a kamuhub grant.
 
 ## Testing performed (2026-08-25, against a real local Postgres)
 

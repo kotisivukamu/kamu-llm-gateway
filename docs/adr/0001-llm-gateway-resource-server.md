@@ -2,7 +2,8 @@
 
 - **Status:** Accepted — 2026-08-24, open questions resolved 2026-08-25,
   `can_mint` provisioning decision superseded 2026-08-25 (see "Open questions"
-  below)
+  below), `can_mint` itself removed and budget enclosure dropped 2026-09-23 (see
+  "Revision 2026-09-23" at the end)
 - **Context repo:** new top-level `kamu-llm-gateway/` in the KamuHub workspace
 - **Builds on:** kamuhub ADR 0001 (identity/authz/billing boundaries), ADR 0002
   (platform agent service), ADR 0005 (public CLI + site git access)
@@ -173,6 +174,9 @@ why: the proxy must never hold a key capable of minting.
 
 ### 4. Delegated minting is a property of a key row
 
+> **Revised 2026-09-23:** there is no `can_mint` capability any more; every
+> active top-level key can derive. See "Revision 2026-09-23".
+
 Because the key is the product, delegated minting is not a separate control
 plane — it is a capability (`can_mint`) on a key row, and a derived sub-key
 is itself a `keys` row (with `parent_key_id` set) consumed and revoked
@@ -281,6 +285,8 @@ window in which a revoked parent's child still works — same window as any
 other revocation, by design.
 
 **3. Recursion — sub-keys cannot mint (depth = 1, hard limit).**
+*(Still in force after 2026-09-23; it is now enforced by `derive` rejecting
+any key with `parent_key_id` set, not by `can_mint`.)*
 `can_mint` is **not inherited** by derived keys. A derived key is minted with
 `can_mint = false` unconditionally; `POST /api/keys/derive` 403s if presented a
 child key. This kills the `A→B→C→…` loop at depth 1 with no depth counter
@@ -295,9 +301,11 @@ literal `*`); `*` attenuates to any named subset, a named set attenuates to a
 subset of itself, and `*` cannot be *produced* from a named parent
 (narrowing `*` stays `*`, which is fine; widening a named set to `*` is
 rejected). There is **no string-prefix / `startsWith` matching** anywhere —
-slugs are exact-match atoms. `budget_usd` attenuates numerically: child budget
+slugs are exact-match atoms. ~~`budget_usd` attenuates numerically: child budget
 ≤ parent's *remaining* budget (not the original), so a parent that has already
-spent most of its budget cannot mint a child with a fresh full budget. Fail
+spent most of its budget cannot mint a child with a fresh full budget.~~
+*(Dropped 2026-09-23: a budget caps only its own key's spend; see
+"Revision 2026-09-23".)* Fail
 closed on every constraint. The org/team boundary is enforced separately and
 non-negotiably: a child key's `team_id` **must equal** the parent's `team_id`
 (confused-deputy defense — a parent scoped to tenant A cannot mint a child
@@ -336,8 +344,8 @@ small and knowable.
 |------------------------|------------------------------------------------------------------|
 | Max expiry             | `child.expires_at = min(requested, parent.expires_at)`           |
 | Revocation             | `parent_key_id` + `root_key_id` cols; revoke cascades subtree   |
-| Recursion              | derived keys minted `can_mint = false`; depth = 1 hard limit      |
-| Scope enclosure        | `models ⊆ parent.models`; `budget ≤ parent.remaining`; exact set|
+| Recursion              | derived keys cannot derive (`parent_key_id` set → 403); depth = 1 |
+| Scope enclosure        | `models ⊆ parent.models`, exact set (budget: not enclosed)       |
 | Lineage tracking       | every event logs `key_id` + `parent_key_id` + `root_key_id`      |
 | Rate limit             | per-parent mint rate + max active children                       |
 | Tenant boundary        | `child.team_id = parent.team_id` (no cross-tenant derivation)     |
@@ -749,3 +757,37 @@ Pennies. This is the explicit, accepted trade for deterministic ~0ms TTFT.
 > non-inheritable); strict set-intersection scope enclosure + tenant boundary;
 > full lineage in every log; per-parent derivation rate limits. These are now
 > invariants, not open questions.
+
+## Revision 2026-09-23: `can_mint` removed, budgets are per key
+
+**Any active top-level key can derive sub-keys.** The `can_mint` column, the
+`INTERNAL_PLATFORM_TEAM_ID` check on `POST /api/keys/derive`, the
+`llm.keys.mint` branch of `POST /keys`, and `admin/`'s `can_mint` option are
+gone (migration `20260923105027_drop_can_mint`).
+
+- **Why the gate was not needed.** Under the §7 invariants a derived key can
+  never do more than its parent: TTL ≤ parent, `models ⊆ parent.models`,
+  same `team_id`, cascade revocation, depth 1, per-parent rate limits. A
+  holder of a leaked parent key can already do everything its children could,
+  so the ability to derive adds no access. `can_mint` was a leftover of
+  migrating off the shared `SESSION_JWT_SECRET` (§6), and the internal-team
+  restriction (2026-08-25, "Internal-caller authz") rested on "no external
+  consumer yet", not on a security argument. Keeping it cost a fragile
+  env var: a random `llm.teams.id` that only exists after the internal org's
+  first login through kamuhub and differs per environment.
+- **Depth stays 1.** Derived keys cannot derive. Sub-keys are the credentials
+  handed to less-trusted places (browser, build machine, editor session), so
+  the chain ends there. Depth 1 also keeps the per-parent rate limit a real
+  bound (it would compound per level) and keeps lineage flat (`root_key_id`).
+- **Budgets are per key, not enclosed.** A key's `budget_usd` caps only that
+  key's own spend. A parent with a $50 budget may derive a child with a $200
+  budget or none. Consequence: a budget is not a subtree spend cap. Org- or
+  service-level spend control belongs to billing (kamuhub), not to key
+  attenuation. The §7.4 "budget ≤ parent remaining" rule is dropped (it was
+  also unsound as implemented: each child was checked separately against the
+  parent's remaining budget, and the proxy enforces spend per `key_id` only).
+- **Internal services** (studio, builder-queue, the kamuhub agent) hold
+  ordinary top-level keys in an ordinary org. `admin/` remains the cross-org
+  superuser surface for minting/revoking keys in any org.
+- **Follow-up outside this repo:** kamuhub's `llm.keys.mint` grant
+  (`20260825120000_llm_gateway_grants`) is now unused and should be removed.

@@ -61,7 +61,7 @@ app.doc("/api/openapi.json", {
     description:
       "API-key resource server: the key row is the product (ADR 0001). " +
       "Mint/list/revoke top-level keys, derive short-lived sub-keys from a " +
-      "can_mint parent, and read the usage ledger keyed by key_id. Driven " +
+      "top-level parent, and read the usage ledger keyed by key_id. Driven " +
       "through the kamuhub BFF (signed X-Kamuhub-Authz), except /api/keys/derive " +
       "which is parent-key-authenticated.",
   },

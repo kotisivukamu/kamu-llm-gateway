@@ -37,11 +37,11 @@ async function seedTeamAndKey(
   const hash = crypto.randomUUID().replaceAll("-", "");
   const [key] = await admin<{ id: string }[]>`
     INSERT INTO llm.keys
-      (team_id, label, key_hash, prefix, key_type, models, budget_usd, status, can_mint)
+      (team_id, label, key_hash, prefix, key_type, models, budget_usd, status)
     VALUES
       (${team.id}, 'numeric test key', ${hash}, 'sk_live_test', ${
     opts.keyType ?? "top"
-  }, '{"*"}', ${opts.budgetUsd}, 'active', false)
+  }, '{"*"}', ${opts.budgetUsd}, 'active')
     RETURNING id
   `;
   await admin`UPDATE llm.keys SET root_key_id = id WHERE id = ${key.id}`;
@@ -107,14 +107,14 @@ Deno.test({
     `;
     const [parent] = await admin<{ id: string }[]>`
       INSERT INTO llm.keys
-        (team_id, label, key_hash, prefix, key_type, models, status, can_mint)
-      VALUES (${team.id}, 'parent', ${crypto.randomUUID()}, 'sk_live_test', 'top', '{"*"}', 'active', true)
+        (team_id, label, key_hash, prefix, key_type, models, status)
+      VALUES (${team.id}, 'parent', ${crypto.randomUUID()}, 'sk_live_test', 'top', '{"*"}', 'active')
       RETURNING id
     `;
     const [child] = await admin<{ id: string }[]>`
       INSERT INTO llm.keys
-        (team_id, label, key_type, models, budget_usd, status, can_mint, parent_key_id, root_key_id)
-      VALUES (${team.id}, 'child', 'derived', '{"*"}', 250.75, 'active', false, ${parent.id}, ${parent.id})
+        (team_id, label, key_type, models, budget_usd, status, parent_key_id, root_key_id)
+      VALUES (${team.id}, 'child', 'derived', '{"*"}', 250.75, 'active', ${parent.id}, ${parent.id})
       RETURNING id
     `;
     const meta = await lookupKeyById(child.id);

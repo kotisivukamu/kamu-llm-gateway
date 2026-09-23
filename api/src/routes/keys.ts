@@ -30,7 +30,6 @@ type KeyListRow =
     | "models"
     | "budget_usd"
     | "status"
-    | "can_mint"
     | "parent_key_id"
     | "root_key_id"
     | "expires_at"
@@ -51,7 +50,6 @@ type KeyCreateRow = Pick<
   | "models"
   | "budget_usd"
   | "status"
-  | "can_mint"
   | "root_key_id"
   | "expires_at"
   | "created_at"
@@ -69,7 +67,6 @@ type KeyDetailRow =
     | "models"
     | "budget_usd"
     | "status"
-    | "can_mint"
     | "parent_key_id"
     | "root_key_id"
     | "metadata"
@@ -95,9 +92,7 @@ interface ParentKeyRow {
   team_id: string;
   key_type: string;
   status: string;
-  can_mint: boolean;
   models: string[];
-  budget_usd: number | null;
   root_key_id: string;
   parent_key_id: string | null;
   expires_at: string | null;
@@ -111,7 +106,6 @@ interface DerivedKeyRow {
   models: string[];
   budget_usd: number | null;
   status: string;
-  can_mint: boolean;
   parent_key_id: string;
   root_key_id: string;
   metadata: Record<string, unknown> | null;
@@ -183,7 +177,7 @@ keys.get("/keys", async (c) => {
   const rows = await withUserContext(user.id, (tx) =>
     tx<KeyListRow[]>`
       SELECT k.id, k.team_id, t.kamuid_org_id, k.label, k.prefix, k.key_type,
-             k.models, k.budget_usd, k.status, k.can_mint,
+             k.models, k.budget_usd, k.status,
              k.parent_key_id, k.root_key_id, k.expires_at,
              k.created_at, k.created_by, k.revoked_at, k.revoked_by
       FROM llm.keys k
@@ -198,22 +192,6 @@ keys.get("/keys", async (c) => {
 keys.post(
   "/keys",
   requireGrant("llm.keys.create", teamOrgIdFromCreate),
-  // Minting a can_mint key is additionally gated by llm.keys.mint (admin-only)
-  // per ADR 0001's 2026-08-25 "can_mint provisioning" resolution: issuing a
-  // key that can itself mint sub-keys is the single most powerful capability
-  // in this system, so it needs its own grant on top of the ordinary
-  // llm.keys.create check. A request that doesn't set can_mint:true is
-  // unaffected — this middleware is a no-op for it.
-  async (c: Context, next: () => Promise<void>) => {
-    const body = await c.req.json<{ can_mint?: boolean }>().catch(
-      () => ({}) as { can_mint?: boolean },
-    );
-    if (body.can_mint) {
-      await requireGrant("llm.keys.mint", teamOrgIdFromCreate)(c, next);
-      return;
-    }
-    await next();
-  },
   async (c) => {
     const user = c.get("user");
     const body = await c.req.json<{
@@ -221,7 +199,6 @@ keys.post(
       label?: string;
       models?: string[];
       budget_usd?: number | null;
-      can_mint?: boolean;
       expires_at?: string | null;
       metadata?: Record<string, unknown> | null;
     }>();
@@ -239,7 +216,6 @@ keys.post(
       });
     }
     const budget = body.budget_usd ?? null;
-    const canMint = body.can_mint ?? false;
     const expiresAt = body.expires_at ?? null;
     // metadata is stored as JSONB; pass as a JSON-stringified param so postgres.js
     // binds it as text and PG casts to jsonb (the column is jsonb). null stays null.
@@ -264,12 +240,12 @@ keys.post(
       tx<KeyCreateRow[]>`
         INSERT INTO llm.keys
           (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-           status, can_mint, root_key_id, expires_at, metadata, created_by)
+           status, root_key_id, expires_at, metadata, created_by)
         VALUES
           (${teamId}, ${label}, ${hash}, ${prefix}, 'top', ${models}, ${budget},
-           'active', ${canMint}, null, ${expiresAt}, ${metadataJson}::jsonb, ${user.id})
+           'active', null, ${expiresAt}, ${metadataJson}::jsonb, ${user.id})
         RETURNING id, team_id, label, prefix, key_type, models, budget_usd,
-                  status, can_mint, root_key_id, expires_at, created_at, created_by
+                  status, root_key_id, expires_at, created_at, created_by
       `);
 
     // Self-reference root_key_id = own id (a top-level key's lineage points at
@@ -292,7 +268,7 @@ keys.get("/keys/:id", async (c) => {
   const [key] = await withUserContext(user.id, (tx) =>
     tx<KeyDetailRow[]>`
       SELECT k.id, k.team_id, t.kamuid_org_id, k.label, k.prefix, k.key_type,
-             k.models, k.budget_usd, k.status, k.can_mint,
+             k.models, k.budget_usd, k.status,
              k.parent_key_id, k.root_key_id, k.metadata, k.constraints,
              k.expires_at, k.created_at, k.updated_at,
              k.revoked_at, k.created_by, k.revoked_by
@@ -372,8 +348,10 @@ keys.post(
 // Checklist (the contract derive enforces — ADR 0001 §7):
 //   1. Lifetime — child expires_at = min(requested, parent.expires_at)
 //   2. Revocation — parent must be active; revoke cascades subtree (separate)
-//   3. Recursion — parent must be a top-level key with can_mint; child can_mint=false
-//   4. Scope enclosure — models ⊆ parent.models (exact set ops); budget ≤ parent remaining
+//   3. Recursion — any active top-level key may derive; derived keys may not (depth 1)
+//   4. Scope enclosure — models ⊆ parent.models (exact set ops). Budget is NOT
+//      enclosed: a budget caps only its own key's spend, so a child may carry any
+//      budget (or none) regardless of the parent's.
 //   5. (constraints — reserved, nullable, unused at MVP)
 //   6. Attribution — lineage cols (parent_key_id, root_key_id) set on the child
 //   7. Rate limit — per-parent mint rate + max active children (MVP: max-active cap)
@@ -398,7 +376,7 @@ derive.post("/keys/derive", async (c) => {
   // path has no RLS context (no BFF, no authenticated role), and the key hash
   // is the authority here.
   const [parent] = await adminSql<ParentKeyRow[]>`
-    SELECT id, team_id, key_type, status, can_mint, models, budget_usd,
+    SELECT id, team_id, key_type, status, models,
            root_key_id, parent_key_id, expires_at
     FROM llm.keys
     WHERE key_hash = ${secretHash} AND key_type = 'top'
@@ -409,20 +387,11 @@ derive.post("/keys/derive", async (c) => {
   if (!parent || parent.status !== "active") {
     return c.json({ error: "Unauthorized" }, 401);
   }
-  // Recursion — depth = 1 hard limit: only top-level keys with can_mint can
-  // derive. A derived key (parent_key_id set) is rejected; can_mint=false is
-  // rejected. (Derived keys are minted can_mint=false unconditionally, so this
-  // also kills the A→B→C loop.)
-  if (!parent.can_mint || parent.parent_key_id !== null) {
-    return c.json({ error: "key cannot mint sub-keys" }, 403);
-  }
-  // Internal-caller boundary (ADR 0001, open question resolved 2026-08-25):
-  // we never issue can_mint to external orgs, so derive additionally requires
-  // the parent's team to be the fixed internal-platform org. This is the
-  // simplest closure of the confused-deputy risk in §7.4 — until this lands,
-  // any can_mint key (there shouldn't be any external ones, but nothing
-  // enforced that) could derive freely.
-  if (parent.team_id !== env.INTERNAL_PLATFORM_TEAM_ID) {
+  // Recursion — depth = 1 hard limit: any top-level key can derive, a derived
+  // key (parent_key_id set) cannot. Sub-keys are the short-lived credentials
+  // handed to less-trusted places (browser, build machine), so the chain must
+  // end there; it also keeps the per-parent rate limit a real bound.
+  if (parent.parent_key_id !== null) {
     return c.json({ error: "key cannot mint sub-keys" }, 403);
   }
 
@@ -476,7 +445,7 @@ derive.post("/keys/derive", async (c) => {
   // Absolute TTL ceiling (MAX_SUBKEY_TTL_SECONDS), independent of the
   // parent-remaining-TTL clamp below. §7.1's clamp alone imposes no upper
   // bound when the parent is unbounded (expires_at IS NULL — the permanent
-  // service-key case), so an unbounded can_mint parent could otherwise mint
+  // service-key case), so an unbounded parent could otherwise mint
   // an arbitrarily long-lived (e.g. multi-year) sub-key. This hard ceiling
   // applies regardless of parent expiry.
   if (requestedTtl > env.MAX_SUBKEY_TTL_SECONDS) {
@@ -506,34 +475,8 @@ derive.post("/keys/derive", async (c) => {
   }
   const childExpiresAt = new Date(childExpSec * 1000).toISOString();
 
-  // --- Budget (§7.4): child budget ≤ parent remaining ---
-  let childBudget: number | null = body.budget_usd ?? null;
-  if (parent.budget_usd !== null) {
-    // Parent remaining = parent budget − parent's own subtree spend so far.
-    // Spend is summed over the parent's subtree (rows where key_id OR root_key_id
-    // = parent id). The poller flushes the satellite's local buffer here, so this
-    // is the durable ledger total.
-    const [spent] = await adminSql<{ spent: string | null }[]>`
-      SELECT COALESCE(SUM(cost_usd), 0)::text AS spent
-      FROM llm.usage_log
-      WHERE key_id = ${parent.id} OR root_key_id = ${parent.id}
-    `;
-    const spentUsd = spent ? Number(spent.spent) : 0;
-    const remaining = parent.budget_usd - spentUsd;
-    if (childBudget === null) {
-      // Default the child to the parent's remaining budget (attenuate fully).
-      childBudget = remaining > 0 ? remaining : 0;
-    }
-    if (childBudget > remaining) {
-      return c.json(
-        {
-          error: "child budget cannot exceed the parent's remaining budget",
-          parent_remaining_usd: remaining,
-        },
-        400,
-      );
-    }
-  }
+  // Budget caps only this key's own spend, independent of the parent's.
+  const childBudget = body.budget_usd ?? null;
 
   // metadata is stored as JSONB; pass as a JSON-stringified param.
   const metadataJson = body.metadata != null
@@ -589,20 +532,18 @@ derive.post("/keys/derive", async (c) => {
     }
 
     // --- Insert the derived keys row ---
-    // can_mint = false unconditionally (depth 1). team_id = parent.team_id (no
-    // cross-tenant). parent_key_id + root_key_id carry the lineage. key_hash is
+    // team_id = parent.team_id (no cross-tenant). parent_key_id + root_key_id carry the lineage. key_hash is
     // NULL for derived keys (the JWT on the wire is the credential; jti = row PK).
     const [row] = await tx<DerivedKeyRow[]>`
       INSERT INTO llm.keys
         (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-         status, can_mint, parent_key_id, root_key_id, metadata, expires_at)
+         status, parent_key_id, root_key_id, metadata, expires_at)
       VALUES
         (${parent.team_id}, ${childLabel}, null, null, 'derived', ${childModels},
-         ${childBudget}, 'active', false, ${parent.id}, ${parent.root_key_id},
+         ${childBudget}, 'active', ${parent.id}, ${parent.root_key_id},
          ${metadataJson}::jsonb, ${childExpiresAt})
       RETURNING id, team_id, label, key_type, models, budget_usd, status,
-                can_mint, parent_key_id, root_key_id, metadata, expires_at,
-                created_at
+                parent_key_id, root_key_id, metadata, expires_at, created_at
     `;
     return row;
   });

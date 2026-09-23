@@ -30,11 +30,11 @@ builder-queue, the kamuhub agent) via `POST /api/keys/derive`.
 Two credential shapes, both first-class `keys` rows:
 
 - **Top-level keys** — the product row, held by external developers and by
-  internal services with `can_mint`. An opaque secret (`sk_live_…`) on the
+  internal services alike. An opaque secret (`sk_live_…`) on the
   wire, stored hashed. Verified on the hot path by an in-process key-metadata
   cache.
-- **Derived sub-keys** — short-lived (1h), session/build-scoped children of a
-  `can_mint` key, minted via `POST /api/keys/derive`. A compact **Ed25519-signed
+- **Derived sub-keys** — short-lived (1h), session/build-scoped children of any
+  active top-level key (depth 1: they cannot derive further), minted via `POST /api/keys/derive`. A compact **Ed25519-signed
   JWT** on the wire whose `jti` is the DB row's PK, also backed by a DB row for
   management/lineage/revocation. Ed25519 (asymmetric) so the proxy holds only the
   public key and can never mint.

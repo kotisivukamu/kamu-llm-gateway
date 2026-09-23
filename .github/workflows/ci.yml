@@ -85,7 +85,6 @@ jobs:
       KAMUHUB_DEV_PRIVATE_KEY: BABUQlkxgTrmH2mdLOdlaIHdelYEqrWPKQqOpSWHAX4=
       ED25519_PRIVATE_KEY: 9eoI/HkwmmgkmKzs9yu8drtLyeglFbz5FIulBSRHXrk=
       ED25519_PUBLIC_KEY: VxiWrfnCtLTKomsUlDYHqGcLrUsyUh0g+n310PIbS64=
-      INTERNAL_PLATFORM_TEAM_ID: 00000000-0000-0000-0000-00000000ffff
       CONTROL_PLANE_POLL_TOKEN: ci-poll-token
     steps:
       - uses: actions/checkout@v4
@@ -129,11 +128,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # gateway-db.numeric.test.ts connects as postgres (owner) directly, not
-      # app_user, to seed fixture rows — but GATEWAY_DATABASE_URL (what the
-      # module under test itself connects with) is the app_user URL, matching
-      # prod (a read-only pool). See proxy/.env.example.
-      GATEWAY_DATABASE_URL: postgres://app_user:app_user@localhost:5432/kamu_llm_gateway_test
+      # gateway-db.numeric.test.ts seeds fixture rows as postgres (owner);
+      # GATEWAY_DATABASE_URL (what the module under test connects with) is
+      # admin_role, matching prod: the proxy's key lookup has no user context,
+      # so it needs BYPASSRLS — as app_user, RLS hides every llm.keys row.
+      GATEWAY_DATABASE_URL: postgres://admin_role:admin_role@localhost:5432/kamu_llm_gateway_test
       ED25519_PUBLIC_KEY: VxiWrfnCtLTKomsUlDYHqGcLrUsyUh0g+n310PIbS64=
       CONTROL_PLANE_POLL_TOKEN: ci-poll-token
     steps:
@@ -154,6 +153,13 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test
         run: deno run --allow-net --allow-read --allow-env migrate.ts up
+
+      # The migration creates admin_role without a password (set out of band in
+      # real environments); give it a throwaway one here.
+      - name: Set admin_role password
+        run: |
+          psql "postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test" \
+            -c "ALTER ROLE admin_role PASSWORD 'admin_role';"
 
       # proxy's `validate` task is fmt/lint/check only (no test — see
       # proxy/deno.json); run the test suite as its own step so a fmt/lint

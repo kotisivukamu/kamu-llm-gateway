@@ -8,7 +8,7 @@ function setDefault(key: string, value: string) {
 
 setDefault(
   "GATEWAY_DATABASE_URL",
-  "postgres://app_user:app_user@localhost:5432/kamu_llm_gateway_test",
+  "postgres://admin_role:admin_role@localhost:5432/kamu_llm_gateway_test",
 );
 setDefault(
   "ED25519_PUBLIC_KEY",

@@ -59,7 +59,6 @@ export interface Key {
   prefix: string | null;
   // Delegated-minting edges (ADR §4). A derived sub-key is a `keys` row like
   // any other, with `parent_key_id` set instead of a human creator.
-  can_mint: boolean;
   parent_key_id: string | null;
   root_key_id: string;
   // TTL. A top-level key is permanent (expires_at IS NULL); a derived sub-key is

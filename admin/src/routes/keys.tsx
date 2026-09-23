@@ -4,10 +4,8 @@ import { adminSql } from "../config/db.ts";
 import { Layout } from "../views/layout.tsx";
 import { generateTopLevelKey } from "../lib/keys.ts";
 
-// Feature 3 — can_mint key provisioning. Supersedes ADR 0001's original
-// "gated by kamuhub grant llm.keys.mint" resolution (see docs/adr/0001,
-// 2026-08-25 revision): can_mint issuance/revocation is now exclusively an
-// admin/ action, not a kamuhub grant. This router IS that action.
+// Superuser key provisioning: mint or revoke a top-level key in any org,
+// outside the kamuhub grant model (e.g. keys for platform services).
 //
 // Revoke uses the identical cascade semantics as api/src/routes/keys.ts's
 // POST /keys/:id/revoke (status='revoked' on the key AND every row where
@@ -21,7 +19,6 @@ interface KeyRow {
   label: string;
   prefix: string | null;
   key_type: string;
-  can_mint: boolean;
   status: string;
   models: string[];
   budget_usd: string | null;
@@ -38,7 +35,7 @@ keysRoutes.use("/api/keys/*", requireSession);
 async function listKeys(): Promise<KeyRow[]> {
   return await adminSql<KeyRow[]>`
     SELECT k.id::text, k.team_id::text, t.kamuid_org_id AS org, k.label,
-           k.prefix, k.key_type, k.can_mint, k.status, k.models,
+           k.prefix, k.key_type, k.status, k.models,
            k.budget_usd::text AS budget_usd, k.created_at::text AS created_at,
            k.revoked_at::text AS revoked_at
     FROM llm.keys k
@@ -79,9 +76,6 @@ keysRoutes.get("/keys", async (c) => {
             </select>
             <input name="label" placeholder="label" required />
             <input name="budget_usd" placeholder="budget_usd (optional)" />
-            <label class="muted">
-              <input type="checkbox" name="can_mint" value="true" /> can_mint
-            </label>
             <button type="submit">Create key</button>
           </div>
         </form>
@@ -95,7 +89,6 @@ keysRoutes.get("/keys", async (c) => {
             <th>Label</th>
             <th>Prefix</th>
             <th>Type</th>
-            <th>can_mint</th>
             <th>Status</th>
             <th>Budget</th>
             <th>Created</th>
@@ -111,7 +104,6 @@ keysRoutes.get("/keys", async (c) => {
                 <code>{k.prefix ?? "(derived)"}</code>
               </td>
               <td>{k.key_type}</td>
-              <td>{k.can_mint ? "yes" : "-"}</td>
               <td>{k.status}</td>
               <td>{k.budget_usd ?? "-"}</td>
               <td class="muted">{k.created_at}</td>
@@ -141,7 +133,6 @@ keysRoutes.post("/keys", async (c) => {
   const form = await c.req.formData();
   const teamId = String(form.get("team_id") ?? "");
   const label = String(form.get("label") ?? "").trim();
-  const canMint = form.get("can_mint") === "true";
   const budgetRaw = String(form.get("budget_usd") ?? "").trim();
   const budget = budgetRaw ? Number(budgetRaw) : null;
 
@@ -161,10 +152,10 @@ keysRoutes.post("/keys", async (c) => {
   const [row] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
       (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-       status, can_mint, root_key_id, created_by)
+       status, root_key_id, created_by)
     VALUES
       (${teamId}, ${label}, ${hash}, ${prefix}, 'top', ${["*"]}, ${budget},
-       'active', ${canMint}, null, ${"admin:" + admin.email})
+       'active', null, ${"admin:" + admin.email})
     RETURNING id
   `;
   await adminSql`
@@ -204,7 +195,6 @@ keysRoutes.post("/api/keys", async (c) => {
   const body = await c.req.json<{
     team_id?: string;
     label?: string;
-    can_mint?: boolean;
     budget_usd?: number | null;
   }>();
   if (!body.team_id || !body.label) {
@@ -214,11 +204,10 @@ keysRoutes.post("/api/keys", async (c) => {
   const [row] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
       (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-       status, can_mint, root_key_id, created_by)
+       status, root_key_id, created_by)
     VALUES
       (${body.team_id}, ${body.label}, ${hash}, ${prefix}, 'top', ${["*"]},
-       ${body.budget_usd ?? null}, 'active', ${body.can_mint ?? false}, null,
-       ${"admin:" + admin.email})
+       ${body.budget_usd ?? null}, 'active', null, ${"admin:" + admin.email})
     RETURNING id
   `;
   await adminSql`

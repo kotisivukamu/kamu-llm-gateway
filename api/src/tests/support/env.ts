@@ -68,12 +68,6 @@ setDefault("SUBKEY_DERIVE_RATE_PER_MIN", "5");
 setDefault("SUBKEY_DERIVE_MAX_ACTIVE", "5");
 setDefault("KEY_META_CACHE_TTL_SEC", "10");
 
-// Fixed id of the seeded "internal platform" team (support/db.ts seeds a team
-// row with exactly this id) — the derive endpoint's confused-deputy boundary
-// (3963761's predecessor commit) requires the parent key's team to match.
-export const INTERNAL_PLATFORM_TEAM_ID = "00000000-0000-0000-0000-00000000ffff";
-setDefault("INTERNAL_PLATFORM_TEAM_ID", INTERNAL_PLATFORM_TEAM_ID);
-
 setDefault("LLM_PROXY_URL", "http://localhost:8301");
 setDefault("CONTROL_PLANE_POLL_TOKEN", "test-poll-token");
 // Effectively disabled for tests — nothing here exercises the poller's own

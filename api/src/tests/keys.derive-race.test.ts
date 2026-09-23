@@ -1,7 +1,7 @@
 import "./support/env.ts";
 import { assertEquals, assertLessOrEqual } from "@std/assert";
 import { buildTestApp } from "./support/app.ts";
-import { adminSql, resetDb, seedInternalPlatformTeam } from "./support/db.ts";
+import { adminSql, resetDb, seedTeam } from "./support/db.ts";
 import { generateTopLevelKey } from "../lib/keys.ts";
 
 // Regression for commit 3963761 ("close TOCTOU race in derive rate-limit/
@@ -19,7 +19,7 @@ import { generateTopLevelKey } from "../lib/keys.ts";
 // calls per-parent.
 //
 // This test fires SUBKEY_DERIVE_MAX_ACTIVE * 3 concurrent derive requests
-// against one can_mint parent (env test config: both
+// against one parent (env test config: both
 // SUBKEY_DERIVE_MAX_ACTIVE and SUBKEY_DERIVE_RATE_PER_MIN = 5, see
 // support/env.ts) and asserts the persisted row count for that parent NEVER
 // exceeds the configured limit, and that the surplus requests were rejected
@@ -32,12 +32,12 @@ Deno.test(
   { sanitizeOps: false, sanitizeResources: false },
   async () => {
     await resetDb();
-    const team = await seedInternalPlatformTeam();
+    const team = await seedTeam();
     const { secret, hash, prefix } = await generateTopLevelKey();
     const [parent] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
-      (team_id, label, key_hash, prefix, key_type, models, status, can_mint)
-    VALUES (${team.id}, 'race-test parent', ${hash}, ${prefix}, 'top', '{"*"}', 'active', true)
+      (team_id, label, key_hash, prefix, key_type, models, status)
+    VALUES (${team.id}, 'race-test parent', ${hash}, ${prefix}, 'top', '{"*"}', 'active')
     RETURNING id
   `;
     await adminSql`UPDATE llm.keys SET root_key_id = id WHERE id = ${parent.id}`;
@@ -92,12 +92,12 @@ Deno.test(
     // locked transaction sees the already-committed siblings rather than a
     // stale pre-lock read.
     await resetDb();
-    const team = await seedInternalPlatformTeam();
+    const team = await seedTeam();
     const { secret, hash, prefix } = await generateTopLevelKey();
     const [parent] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
-      (team_id, label, key_hash, prefix, key_type, models, status, can_mint)
-    VALUES (${team.id}, 'active-cap parent', ${hash}, ${prefix}, 'top', '{"*"}', 'active', true)
+      (team_id, label, key_hash, prefix, key_type, models, status)
+    VALUES (${team.id}, 'active-cap parent', ${hash}, ${prefix}, 'top', '{"*"}', 'active')
     RETURNING id
   `;
     await adminSql`UPDATE llm.keys SET root_key_id = id WHERE id = ${parent.id}`;

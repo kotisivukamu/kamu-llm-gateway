@@ -41,12 +41,12 @@ builder/analytics/journey machinery in kamusites hang off a `site_id`.
 ## Two credential shapes (both are `keys` rows)
 
 - **Top-level keys** — the product row, held by external developers and by
-  internal services with `can_mint`. An opaque secret (`sk_live_…`) on the wire,
+  internal services alike. An opaque secret (`sk_live_…`) on the wire,
   stored hashed on the row. Verified on the hot path by an in-process
   key-metadata cache (the kamuhub `key_gate` pattern), so revocation takes
   effect within the cache TTL without a DB read per request.
-- **Derived sub-keys** — short-lived (1h), session/build-scoped children of a
-  `can_mint` top-level key, minted via `POST /api/keys/derive`. A compact
+- **Derived sub-keys** — short-lived (1h), session/build-scoped children of any
+  active top-level key (derived keys cannot derive: depth 1), minted via `POST /api/keys/derive`. A compact
   **Ed25519-signed JWT** on the wire (the `jti` claim IS the DB row's PK),
   **also backed by a DB row** for management/lineage/revocation. Signed with
   Ed25519 (asymmetric) — the proxy holds only the public key and can never
