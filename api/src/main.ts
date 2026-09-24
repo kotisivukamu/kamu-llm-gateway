@@ -6,6 +6,7 @@ import { sql } from "./config/db.ts";
 import { createRouter } from "./lib/openapi.ts";
 import { requestLogger } from "./middleware/request-logger.ts";
 import { derive, keys } from "./routes/keys.ts";
+import { teams } from "./routes/teams.ts";
 import { usage } from "./routes/usage.ts";
 import { startUsagePoller } from "./lib/usage-poller.ts";
 
@@ -51,6 +52,7 @@ app.route("/api", derive);
 
 // Authed keys + usage routes (authMiddleware → requireGrant / withUserContext).
 app.route("/api", keys);
+app.route("/api", teams);
 app.route("/api", usage);
 
 app.doc("/api/openapi.json", {
