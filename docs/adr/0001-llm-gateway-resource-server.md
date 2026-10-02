@@ -360,7 +360,10 @@ a service's whole subtree. The satellite meters into its local SQLite buffer
 exactly as today; the poller pulls rows into the gateway's durable `usage_log`
 keyed by `key_id` + the lineage cols. The contract shape is otherwise unchanged
 (the satellite ↔ control-plane `/usage` poll is preserved; only the identity
-columns change).
+columns change). The satellite's `GET /usage` also accepts a key holder's own credential
+(top-level key: rows with `root_key_id` = itself, i.e. its whole derived tree;
+derived key: only its own `key_id`), so the builder and studio can read their
+own spend in near real time; the poll secret still sees every row.
 
 ### 9. CRUD surface for kamuhub
 
