@@ -22,6 +22,10 @@ const admin = postgres(
   { connection: { search_path: "llm,public" }, onnotice: () => {} },
 );
 
+// Whatever the environment set (CI sets its own; support/env.ts defaults it
+// otherwise) — the same value routes/usage.ts compares against.
+const POLL_TOKEN = Deno.env.get("CONTROL_PLANE_POLL_TOKEN")!;
+
 // Throwaway Ed25519 test key pair: the private half matches the test
 // ED25519_PUBLIC_KEY in support/env.ts (same pair as api/src/tests and CI).
 const TEST_PRIVATE_KEY = "9eoI/HkwmmgkmKzs9yu8drtLyeglFbz5FIulBSRHXrk=";
@@ -158,7 +162,7 @@ const opts = { sanitizeOps: false, sanitizeResources: false };
 Deno.test({
   name: "poll secret: sees every row, shape unchanged plus totals",
   fn: async () => {
-    const { status, body } = await get("test-poll-token");
+    const { status, body } = await get(POLL_TOKEN);
     assertEquals(status, 200);
     assertEquals(body.rows.length, 6);
     assertEquals(body.max_id, body.rows[5].id);
@@ -231,14 +235,14 @@ Deno.test({
       childA1.id,
       childA1.id,
     ]);
-    const pollByName = await get("test-poll-token", "?name=build-1");
+    const pollByName = await get(POLL_TOKEN, "?name=build-1");
     assertEquals(pollByName.body.rows.length, 3);
 
     // since + limit still page as before.
     const first = byName.body.rows[0].id;
     const after = await get(topA.secret, `?name=build-1&since=${first}`);
     assertEquals(after.body.rows.length, 1);
-    const limited = await get("test-poll-token", "?limit=2");
+    const limited = await get(POLL_TOKEN, "?limit=2");
     assertEquals(limited.body.rows.length, 2);
     assertEquals(limited.body.totals.requests, 2);
   },
