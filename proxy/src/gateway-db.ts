@@ -1,9 +1,14 @@
 import postgres from "postgres";
 import { env } from "./env.ts";
 
-// Read-only Postgres connect to the gateway DB for key-meta lookups (ADR 0001
-// §3/§10.4). The proxy looks up `llm.keys` rows here to resolve the two
-// credential shapes:
+// Postgres connection to the gateway DB. Two jobs:
+//   1. key-meta lookups (ADR 0001 §3/§10.4), read-only.
+//   2. the per-key spend ledger for budgeted keys (llm.key_spend), the one
+//      thing the proxy writes. It lives here rather than in the machine's
+//      SQLite because the proxy runs on more than one machine: a local total
+//      only saw that machine's share, so a $3 key could spend $3 per machine.
+//
+// The proxy looks up `llm.keys` rows to resolve the two credential shapes:
 //   - top-level opaque keys (`sk_live_…`): by `key_hash` (sha256 hex of the
 //     presented secret).
 //   - derived sub-keys: by `id = jti` (the JWT's jti IS the row's PK).
@@ -22,8 +27,6 @@ export const gateway = postgres(env.GATEWAY_DATABASE_URL, {
   connect_timeout: 10,
   connection: { search_path: "llm,public" },
   onnotice: () => {},
-  // The proxy never writes to the gateway DB; this pool is read-only by
-  // construction (we only ever SELECT).
 });
 
 // The subset of the `llm.keys` row the proxy needs to authorize and meter a
@@ -102,4 +105,33 @@ export async function lookupKeyById(
      LIMIT 1
   `;
   return toKeyMeta(rows[0]);
+}
+
+// Cumulative USD a budgeted key has spent, across every proxy machine. 0 when
+// the key has no ledger row yet. Throws if Postgres is unreachable; the caller
+// refuses the request rather than letting a budgeted key run unchecked.
+export async function getSpentUsd(keyId: string): Promise<number> {
+  const rows = await gateway<{ spent_usd: string }[]>`
+    SELECT spent_usd FROM llm.key_spend WHERE key_id = ${keyId}
+  `;
+  return rows.length > 0 ? Number(rows[0].spent_usd) : 0;
+}
+
+// Adds one completed request's cost to a budgeted key's running total. Atomic
+// in Postgres, so concurrent requests on different machines all count.
+// No-op for non-positive costs (an unpriced response), which keeps
+// request_count meaning "billed requests".
+export async function recordSpend(
+  keyId: string,
+  costUsd: number,
+): Promise<void> {
+  if (!(costUsd > 0)) return;
+  await gateway`
+    INSERT INTO llm.key_spend (key_id, spent_usd, request_count)
+    VALUES (${keyId}, ${costUsd}, 1)
+    ON CONFLICT (key_id) DO UPDATE SET
+      spent_usd     = llm.key_spend.spent_usd + excluded.spent_usd,
+      request_count = llm.key_spend.request_count + 1,
+      updated_at    = now()
+  `;
 }

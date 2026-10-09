@@ -1,11 +1,17 @@
-// SQLite persistence for LLM usage accounting. Two tables:
-//   - token_spend: running USD total per budgeted key, used to enforce spend
-//     caps (uncapped keys never touch it). Keyed by `key_id` (ADR 0001 §8).
+// SQLite persistence for LLM usage accounting, one file per proxy machine on
+// that machine's volume:
 //   - usage_log: one row per completed request for EVERY key, storing the raw
 //     token buckets + computed cost so spend can be aggregated per `key_id`
 //     and per label. Carries the lineage columns (`parent_key_id`,
 //     `root_key_id`) so the gateway's durable ledger can roll spend up to a
-//     service's whole subtree (ADR 0001 §7.6).
+//     service's whole subtree (ADR 0001 §7.6). The api's poller copies it into
+//     Postgres (llm.usage_log), keyed by (store_id, id).
+//   - store_meta: this file's random store_id (migration 0004). Each machine
+//     numbers usage_log from 1, so the id alone is not unique across machines.
+//   - token_spend: the pre-2026-10 per-key spend ledger. No longer read or
+//     written: with more than one machine a local total only saw that
+//     machine's share, so budgets now live in Postgres (llm.key_spend, see
+//     gateway-db.ts). Left in place rather than dropped.
 //
 // `jti` is kept as an alias = key_id for the poll contract (the control-plane
 // poller still reads `jti`); the authority column is `key_id`.
@@ -95,39 +101,16 @@ export function probe(): void {
   stmt("SELECT 1 AS ok").get();
 }
 
-// Cumulative USD already spent by a key. 0 when the key has no ledger row yet
-// (i.e. it has never completed a metered request). Keyed by `key_id` (the
-// gateway row PK — ADR 0001 §8); `jti` is the legacy alias kept in the column.
-export function getSpentUsd(key_id: string): number {
-  const row = stmt("SELECT spent_usd FROM token_spend WHERE key_id = ?")
-    .get(key_id) as { spent_usd: number } | undefined;
-  return row?.spent_usd ?? 0;
-}
+// This file's permanent random id (migration 0004), read once.
+let cachedStoreId: string | null = null;
 
-// Adds one request's cost to a key's running total, creating the ledger row on
-// first use. No-op for non-positive costs (e.g. a response we couldn't price),
-// which keeps request_count meaningful as "number of billed requests". Carries
-// the lineage columns so the gateway's durable ledger can roll spend up to a
-// service's whole subtree without a join (ADR 0001 §7.6).
-export function recordSpend(
-  key_id: string,
-  name: string,
-  budgetUsd: number,
-  costUsd: number,
-  parent_key_id: string | null,
-  root_key_id: string | null,
-): void {
-  if (!(costUsd > 0)) return;
-  stmt(
-    `INSERT INTO token_spend
-         (key_id, jti, name, budget_usd, spent_usd, request_count,
-          parent_key_id, root_key_id)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-       ON CONFLICT(key_id) DO UPDATE SET
-         spent_usd     = spent_usd + excluded.spent_usd,
-         request_count = request_count + 1,
-         updated_at    = datetime('now')`,
-  ).run(key_id, key_id, name, budgetUsd, costUsd, parent_key_id, root_key_id);
+export function storeId(): string {
+  if (cachedStoreId) return cachedStoreId;
+  const row = stmt("SELECT v FROM store_meta WHERE k = 'store_id'").get() as {
+    v: string;
+  };
+  cachedStoreId = row.v;
+  return cachedStoreId;
 }
 
 // One completed upstream request's usage. cost_usd is null when the model had

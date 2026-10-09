@@ -1,6 +1,6 @@
 import "./support/env.ts";
-import { assertEquals } from "@std/assert";
-import { pollOnce } from "../lib/usage-poller.ts";
+import { assertEquals, assertRejects } from "@std/assert";
+import { pollAll, pollOnce } from "../lib/usage-poller.ts";
 import { adminSql, resetDb, seedKey, seedTeam } from "./support/db.ts";
 
 // Regression for commit f840311 ("correct usage-poller INSERT/SELECT column
@@ -15,15 +15,25 @@ import { adminSql, resetDb, seedKey, seedTeam } from "./support/db.ts";
 
 const originalFetch = globalThis.fetch;
 
-function mockUsageEndpoint(rows: unknown[], maxId: number | null) {
+const ORIGIN = "http://proxy.test";
+const STORE = "store-a";
+
+function mockUsageEndpoint(
+  rows: unknown[],
+  maxId: number | null,
+  storeId = STORE,
+) {
   globalThis.fetch = ((input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("/usage")) {
       return Promise.resolve(
-        new Response(JSON.stringify({ rows, max_id: maxId }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify({ rows, store_id: storeId, max_id: maxId }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
       );
     }
     throw new Error(`unexpected fetch in test: ${url}`);
@@ -59,7 +69,7 @@ Deno.test("pollOnce: a seeded usage row round-trips into llm.usage_log", {
     42,
   );
   try {
-    const cursor = await pollOnce(0);
+    const cursor = await pollOnce(ORIGIN, STORE, 0);
     assertEquals(cursor, 42);
   } finally {
     restoreFetch();
@@ -77,9 +87,11 @@ Deno.test("pollOnce: a seeded usage row round-trips into llm.usage_log", {
   }[]>`
     SELECT id::text, key_id::text, root_key_id::text, model, cost_usd::text,
            tokens_in, tokens_out, metadata
-    FROM llm.usage_log WHERE id = 42
+    FROM llm.usage_log WHERE store_id = ${STORE} AND source_id = 42
   `;
-  if (!row) throw new Error("expected the poller to have inserted row id 42");
+  if (!row) {
+    throw new Error("expected the poller to have inserted source row 42");
+  }
   assertEquals(row.key_id, keyId);
   assertEquals(row.root_key_id, keyId);
   assertEquals(row.model, "kimi-k2.7-日本語");
@@ -117,15 +129,17 @@ Deno.test("pollOnce: a null cost_usd round-trips as null, not an error", {
     43,
   );
   try {
-    await pollOnce(0);
+    await pollOnce(ORIGIN, STORE, 0);
   } finally {
     restoreFetch();
   }
 
   const [row] = await adminSql<{ cost_usd: string | null }[]>`
-    SELECT cost_usd::text FROM llm.usage_log WHERE id = 43
+    SELECT cost_usd::text FROM llm.usage_log WHERE source_id = 43
   `;
-  if (!row) throw new Error("expected the poller to have inserted row id 43");
+  if (!row) {
+    throw new Error("expected the poller to have inserted source row 43");
+  }
   assertEquals(row.cost_usd, null);
 });
 
@@ -155,14 +169,14 @@ Deno.test(
     ];
     mockUsageEndpoint(page, 44);
     try {
-      await pollOnce(0);
-      await pollOnce(0); // re-poll from the same `since` — must not throw or duplicate
+      await pollOnce(ORIGIN, STORE, 0);
+      await pollOnce(ORIGIN, STORE, 0); // re-poll from the same `since` — must not throw or duplicate
     } finally {
       restoreFetch();
     }
 
     const [{ n }] = await adminSql<{ n: number }[]>`
-    SELECT COUNT(*)::int AS n FROM llm.usage_log WHERE id = 44
+    SELECT COUNT(*)::int AS n FROM llm.usage_log WHERE source_id = 44
   `;
     assertEquals(n, 1);
   },
@@ -175,7 +189,7 @@ Deno.test("pollOnce: no rows / max_id null returns the same cursor", {
   await resetDb();
   mockUsageEndpoint([], null);
   try {
-    const cursor = await pollOnce(7);
+    const cursor = await pollOnce(ORIGIN, STORE, 7);
     assertEquals(cursor, 7);
   } finally {
     restoreFetch();
@@ -207,14 +221,98 @@ Deno.test(
     });
     mockUsageEndpoint([row(1, crypto.randomUUID()), row(2, keyId)], 2);
     try {
-      const cursor = await pollOnce(0);
+      const cursor = await pollOnce(ORIGIN, STORE, 0);
       assertEquals(cursor, 2);
-      const rows = await adminSql<{ id: number }[]>`
-      SELECT id::int FROM llm.usage_log ORDER BY id
+      const rows = await adminSql<{ source_id: number }[]>`
+      SELECT source_id::int FROM llm.usage_log ORDER BY source_id
     `;
-      assertEquals(rows.map((r) => r.id), [2]);
+      assertEquals(rows.map((r) => r.source_id), [2]);
     } finally {
       restoreFetch();
     }
+  },
+);
+
+const usageRow = (id: number, key: string) => ({
+  id,
+  key_id: key,
+  parent_key_id: null,
+  root_key_id: key,
+  model: "glm-5.3",
+  input_tokens: 1,
+  output_tokens: 1,
+  cost_usd: 0.001,
+  created_at: "2026-10-09T12:00:00.000Z",
+});
+
+Deno.test(
+  "pollOnce: two machines' rows with the same local id both land",
+  { sanitizeOps: false, sanitizeResources: false },
+  async () => {
+    // Every proxy machine numbers its SQLite rows from 1. Keyed on the local
+    // id alone, the second machine's row 1 was dropped as a conflict.
+    await resetDb();
+    const team = await seedTeam();
+    const keyId = await seedKey({ teamId: team.id, label: "two stores" });
+    try {
+      mockUsageEndpoint([usageRow(1, keyId)], 1, "store-arn");
+      await pollOnce(ORIGIN, "store-arn", 0);
+      mockUsageEndpoint([usageRow(1, keyId)], 1, "store-fra");
+      await pollOnce(ORIGIN, "store-fra", 0);
+    } finally {
+      restoreFetch();
+    }
+    const rows = await adminSql<{ store_id: string; source_id: number }[]>`
+      SELECT store_id, source_id::int FROM llm.usage_log ORDER BY store_id
+    `;
+    assertEquals([...rows], [
+      { store_id: "store-arn", source_id: 1 },
+      { store_id: "store-fra", source_id: 1 },
+    ]);
+  },
+);
+
+Deno.test(
+  "pollOnce: a different store answering at the origin throws, inserts nothing",
+  { sanitizeOps: false, sanitizeResources: false },
+  async () => {
+    await resetDb();
+    const team = await seedTeam();
+    const keyId = await seedKey({ teamId: team.id, label: "store swap" });
+    mockUsageEndpoint([usageRow(5, keyId)], 5, "store-new");
+    try {
+      await assertRejects(() => pollOnce(ORIGIN, "store-old", 0));
+    } finally {
+      restoreFetch();
+    }
+    const [{ n }] = await adminSql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM llm.usage_log
+    `;
+    assertEquals(n, 0);
+  },
+);
+
+Deno.test(
+  "pollAll: probes the store, resumes from its MAX(source_id), keeps the cursor",
+  { sanitizeOps: false, sanitizeResources: false },
+  async () => {
+    // LLM_PROXY_URL in tests is not a *.internal name, so pollAll polls it as
+    // the single satellite.
+    await resetDb();
+    const team = await seedTeam();
+    const keyId = await seedKey({ teamId: team.id, label: "poll all" });
+    mockUsageEndpoint([usageRow(3, keyId)], 3, "store-x");
+    const state = { storeAt: new Map(), cursors: new Map() };
+    try {
+      await pollAll(state);
+    } finally {
+      restoreFetch();
+    }
+    assertEquals([...state.storeAt.values()], ["store-x"]);
+    assertEquals(state.cursors.get("store-x"), 3);
+    const [{ n }] = await adminSql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM llm.usage_log WHERE store_id = 'store-x'
+    `;
+    assertEquals(n, 1);
   },
 );

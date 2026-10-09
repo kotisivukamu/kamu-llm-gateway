@@ -3,16 +3,18 @@ primary_region = "arn"
 kill_signal = "SIGTERM"
 kill_timeout = "15s"
 
+# One machine per region (arn + fra), each with its own proxy_data volume.
+# Not bluegreen: Fly doesn't support bluegreen with volumes. Rolling replaces
+# one machine at a time, so the other region keeps serving during a deploy.
 [deploy]
-  # Not bluegreen: Fly doesn't support bluegreen with volumes. One machine, so
-  # a deploy is a short restart.
   strategy = "rolling"
 
 [env]
   PORT = "8301"
-  # The usage buffer must survive restarts: api's poller keys llm.usage_log on
-  # this SQLite row id and resumes from MAX(id), so a wiped file restarting ids
-  # at 1 would be silently skipped. Also why this app stays at ONE machine.
+  # Each machine's usage buffer, on its own volume so it survives restarts.
+  # The file carries a random store_id; api's poller keys llm.usage_log on
+  # (store_id, row id) and keeps a cursor per store, so several machines are
+  # fine. Budgets are not in this file (llm.key_spend in Postgres).
   DB_PATH = "/data/llm-proxy.db"
   # KamuStatus telemetry. Both values are non-secret by design: the ingest key
   # is a public write-only DSN-style key (the browser SDK puts it in page
@@ -42,7 +44,9 @@ kill_timeout = "15s"
 [[restart]]
   policy = "always"
 
+# 512 MB: at 256 MB a statement leak (fixed in 3961b53) OOM-killed the
+# machine every ~7 h, and the fixed process still settles around 140 MB RSS.
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
-  memory_mb = 256
+  memory_mb = 512

@@ -15,7 +15,8 @@ import {
   extractUsageFromJson,
   extractUsageFromSse,
 } from "../cost.ts";
-import { getSpentUsd, recordSpend, recordUsage } from "../db.ts";
+import { recordUsage } from "../db.ts";
+import { getSpentUsd, recordSpend } from "../gateway-db.ts";
 
 function safeJsonParse(text: string): unknown {
   try {
@@ -89,9 +90,12 @@ proxy.all("/:provider_slug/*", async (c) => {
   // background tee below). Pre-check bounds the blast radius to at most the
   // budget plus one in-flight request's cost (we only learn a request's cost
   // after it completes). Keyed by key_id (ADR 0001 §8); null budget = uncapped.
+  // The running total is in Postgres so every proxy machine sees the same
+  // number. If Postgres is unreachable the request fails rather than running
+  // a budgeted key unchecked.
   const budgeted = typeof token.budget_usd === "number";
   if (budgeted) {
-    const spent = getSpentUsd(token.key_id);
+    const spent = await getSpentUsd(token.key_id);
     if (spent >= token.budget_usd!) {
       return c.json(
         {
@@ -303,14 +307,7 @@ proxy.all("/:provider_slug/*", async (c) => {
       }
 
       if (budgeted) {
-        recordSpend(
-          token.key_id,
-          token.name,
-          token.budget_usd!,
-          cost,
-          token.parent_key_id,
-          token.root_key_id,
-        );
+        await recordSpend(token.key_id, cost);
       }
       console.log(
         `[proxy] metered key="${token.name}" model=${modelInBody} ` +

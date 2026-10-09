@@ -1,9 +1,13 @@
 // SATELLITE SIDE — stays on the proxy satellite forever.
 //
 // Exposes the local SQLite usage_log so the control plane (the gateway api's
-// poller) can pull completed-request rows into durable storage. The satellite
-// itself is stateless beyond this local buffer: the file is destroyed on
-// deploy/restart, which is exactly why the control plane polls it.
+// poller) can pull completed-request rows into durable storage. Every proxy
+// machine has its own file on its own volume, numbered from 1, so the poller
+// reaches each machine directly and keys rows by (store_id, id).
+//
+// A key holder's read (below) sees only the machine that answered it, which
+// is the nearest region and so normally the one serving its requests. Budget
+// enforcement does not depend on this read: it uses llm.key_spend in Postgres.
 //
 // CONTRACT — the JSON shape returned by GET /usage is the public API between
 // the satellite and the control plane. It is duplicated as a TypeScript
@@ -43,6 +47,7 @@
 //           "created_at": string     // ISO 8601 UTC
 //         }
 //       ],
+//       "store_id": string,          // this machine's file (migration 0004)
 //       "max_id": number | null,     // highest id in this page, null if empty
 //       "totals": {                  // summed over the returned `rows` only
 //         "requests": number,
@@ -62,7 +67,7 @@
 
 import { Hono } from "@hono/hono";
 import { env } from "../env.ts";
-import { stmt } from "../db.ts";
+import { stmt, storeId } from "../db.ts";
 import { extractCredential, verifyCredential } from "../auth.ts";
 
 export const usage = new Hono();
@@ -168,6 +173,7 @@ usage.all("/", async (c) => {
       // a real timestamptz without a timezone-interpretation footgun.
       created_at: `${r.created_at.replace(" ", "T")}Z`,
     })),
+    store_id: storeId(),
     max_id,
     totals,
   });

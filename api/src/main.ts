@@ -82,14 +82,13 @@ app.onError((err, c) => {
 Deno.serve({ port: env.PORT, hostname: "::" }, app.fetch);
 console.log(`kamu-llm-gateway-api listening on :${env.PORT}`);
 
-// Control-plane poller (ADR 0001 §8/§9): pulls the proxy satellite's local
+// Control-plane poller (ADR 0001 §8/§9): pulls each proxy machine's local
 // usage buffer into the durable llm.usage_log table on an interval. Started
 // after the server is listening so a slow first poll doesn't delay boot.
-startUsagePoller().then((stop) => {
-  const shutdown = () => {
-    stop();
-    Deno.exit(0);
-  };
-  Deno.addSignalListener("SIGINT", shutdown);
-  Deno.addSignalListener("SIGTERM", shutdown);
-});
+const stopUsagePoller = startUsagePoller();
+const shutdown = () => {
+  stopUsagePoller();
+  Deno.exit(0);
+};
+Deno.addSignalListener("SIGINT", shutdown);
+Deno.addSignalListener("SIGTERM", shutdown);
