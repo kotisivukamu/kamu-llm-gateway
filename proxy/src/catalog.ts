@@ -303,13 +303,9 @@ export const MODELS: Record<string, ModelEntry> = {
     cache_read_cost_per_mtok_usd: 0.174,
     cache_write_cost_per_mtok_usd: 1.74,
   },
-  "deepseek-v4-flash": {
-    provider_slug: "deepseek",
-    input_cost_per_mtok_usd: 0.14,
-    output_cost_per_mtok_usd: 0.28,
-    cache_read_cost_per_mtok_usd: 0.014,
-    cache_write_cost_per_mtok_usd: 0.14,
-  },
+  // deepseek-v4-flash retired 2026-10-09: replaced by deepseek-v4.1-flash on
+  // cortecs (below). DeepSeek now serves the old slug as V4.1 at V4.1 prices,
+  // so the 0.14/0.28 row here had become wrong too.
 
   // --- Cortecs aggregator (EU-only) ---------------------------------------
   // Slugs are Cortecs' own (GET api.cortecs.ai/v1/models). Prices are what
@@ -369,6 +365,22 @@ export const MODELS: Record<string, ModelEntry> = {
     output_cost_per_mtok_usd: 0.5188,
     cache_read_cost_per_mtok_usd: 0.052,
     cache_write_cost_per_mtok_usd: 0.208,
+  },
+  // DeepSeek V4.1 Flash (added 2026-10-09, replaces native deepseek-v4-flash).
+  // Reasoning + tools + image input, 1M context. Cortecs lists five providers
+  // for it, but only tensorix returns structured tool_calls: aki (where
+  // cortecs routes by default) leaks raw <｜DSML｜ calls> markup into
+  // `content`, which breaks every agent loop. Hence the provider pin. Cortecs
+  // does not treat allowed_providers as strict (pinning arkane/entrim/sference
+  // still landed on aki), so a tensorix outage would silently degrade tools.
+  // reasoning_effort "none" really disables thinking here (unlike GLM).
+  "deepseek-v4.1-flash": {
+    provider_slug: "cortecs",
+    input_cost_per_mtok_usd: 0.208,
+    output_cost_per_mtok_usd: 0.6228,
+    cache_read_cost_per_mtok_usd: 0.0046,
+    cache_write_cost_per_mtok_usd: 0.208,
+    request_overrides: { allowed_providers: ["tensorix"] },
   },
   "glm-5.2": {
     provider_slug: "cortecs",
