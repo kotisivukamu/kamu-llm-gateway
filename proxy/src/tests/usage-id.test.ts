@@ -56,7 +56,9 @@ Deno.test("GET /usage?after= pages by usage_id and returns machine_id", async ()
   }
   const get = async (after: string) => {
     const res = await usage.request(`/?after=${after}&key_id=${key}`, {
-      headers: { authorization: "Bearer test-poll-token" },
+      headers: {
+        authorization: `Bearer ${Deno.env.get("CONTROL_PLANE_POLL_TOKEN")}`,
+      },
     });
     return (await res.json()).rows as Array<
       { usage_id: string; machine_id: string; input_tokens: number }
