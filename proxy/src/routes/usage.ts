@@ -62,7 +62,7 @@
 
 import { Hono } from "@hono/hono";
 import { env } from "../env.ts";
-import { db } from "../db.ts";
+import { stmt } from "../db.ts";
 import { extractCredential, verifyCredential } from "../auth.ts";
 
 export const usage = new Hono();
@@ -113,9 +113,8 @@ usage.all("/", async (c) => {
   }
   params.push(limit);
 
-  const rows = db()
-    .prepare(
-      `SELECT id, key_id, jti, name, parent_key_id, root_key_id, model,
+  const rows = stmt(
+    `SELECT id, key_id, jti, name, parent_key_id, root_key_id, model,
               input_tokens, output_tokens,
               cache_read_tokens, cache_write_tokens,
               cost_usd, created_at
@@ -123,23 +122,22 @@ usage.all("/", async (c) => {
         WHERE ${conditions.join(" AND ")}
         ORDER BY id ASC
         LIMIT ?`,
-    )
-    .all(...params) as Array<{
-      id: number;
-      key_id: string;
-      jti: string;
-      name: string;
-      parent_key_id: string | null;
-      root_key_id: string | null;
-      model: string;
-      input_tokens: number;
-      output_tokens: number;
-      cache_read_tokens: number;
-      cache_write_tokens: number;
-      cost_usd: number | null;
-      // SQLite datetime('now') is a naive string; tag it as UTC ISO.
-      created_at: string;
-    }>;
+  ).all(...params) as Array<{
+    id: number;
+    key_id: string;
+    jti: string;
+    name: string;
+    parent_key_id: string | null;
+    root_key_id: string | null;
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    cost_usd: number | null;
+    // SQLite datetime('now') is a naive string; tag it as UTC ISO.
+    created_at: string;
+  }>;
 
   const max_id = rows.length > 0 ? rows[rows.length - 1].id : null;
 
