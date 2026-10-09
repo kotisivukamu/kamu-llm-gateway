@@ -4,10 +4,10 @@
 //     token buckets + computed cost so spend can be aggregated per `key_id`
 //     and per label. Carries the lineage columns (`parent_key_id`,
 //     `root_key_id`) so the gateway's durable ledger can roll spend up to a
-//     service's whole subtree (ADR 0001 §7.6). The api's poller copies it into
-//     Postgres (llm.usage_log), keyed by (store_id, id).
-//   - store_meta: this file's random store_id (migration 0004). Each machine
-//     numbers usage_log from 1, so the id alone is not unique across machines.
+//     service's whole subtree (ADR 0001 §7.6). Each row carries a usage_id
+//     (UUIDv7, unique across machines and time-ordered) and the machine_id
+//     that served it; the api's poller copies rows into Postgres
+//     (llm.usage_log) keyed by usage_id.
 //   - token_spend: the pre-2026-10 per-key spend ledger. No longer read or
 //     written: with more than one machine a local total only saw that
 //     machine's share, so budgets now live in Postgres (llm.key_spend, see
@@ -101,16 +101,44 @@ export function probe(): void {
   stmt("SELECT 1 AS ok").get();
 }
 
-// This file's permanent random id (migration 0004), read once.
-let cachedStoreId: string | null = null;
+// The Fly machine this process runs on; "local" outside Fly.
+const MACHINE_ID = Deno.env.get("FLY_MACHINE_ID") ?? "local";
 
-export function storeId(): string {
-  if (cachedStoreId) return cachedStoreId;
-  const row = stmt("SELECT v FROM store_meta WHERE k = 'store_id'").get() as {
-    v: string;
-  };
-  cachedStoreId = row.v;
-  return cachedStoreId;
+// UUIDv7: 48-bit Unix ms timestamp, a 12-bit counter, then random bits.
+// Sorts by time as a string, which is how the poller pages a machine
+// (`usage_id > ?`). The counter keeps ids from this process strictly
+// increasing even within one millisecond (RFC 9562 §6.2 method 1), so a page
+// boundary never falls between two rows of the same ms in the wrong order.
+let lastMs = 0;
+let seq = 0;
+
+export function uuidv7(now = Date.now()): string {
+  let ms = now;
+  if (ms <= lastMs) {
+    ms = lastMs;
+    seq++;
+    if (seq > 0xfff) {
+      ms++;
+      seq = 0;
+    }
+  } else {
+    seq = 0;
+  }
+  lastMs = ms;
+
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  let ts = ms;
+  for (let i = 5; i >= 0; i--) {
+    b[i] = ts % 256;
+    ts = Math.floor(ts / 256);
+  }
+  b[6] = 0x70 | (seq >> 8); // version 7 + counter high bits
+  b[7] = seq & 0xff;
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 9562 variant
+  const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${
+    h.slice(16, 20)
+  }-${h.slice(20)}`;
 }
 
 // One completed upstream request's usage. cost_usd is null when the model had
@@ -134,11 +162,13 @@ export interface UsageRecord {
 export function recordUsage(r: UsageRecord): void {
   stmt(
     `INSERT INTO usage_log
-         (key_id, jti, name, parent_key_id, root_key_id,
+         (usage_id, machine_id, key_id, jti, name, parent_key_id, root_key_id,
           model, input_tokens, output_tokens,
           cache_read_tokens, cache_write_tokens, cost_usd)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
+    uuidv7(),
+    MACHINE_ID,
     r.key_id,
     r.key_id,
     r.name,

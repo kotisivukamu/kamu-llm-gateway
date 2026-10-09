@@ -2,8 +2,9 @@
 //
 // Exposes the local SQLite usage_log so the control plane (the gateway api's
 // poller) can pull completed-request rows into durable storage. Every proxy
-// machine has its own file on its own volume, numbered from 1, so the poller
-// reaches each machine directly and keys rows by (store_id, id).
+// machine has its own file on its own volume. Rows carry a usage_id (UUIDv7,
+// unique across machines, time-ordered) and the machine_id that served them;
+// the poller asks each machine for rows `after` the newest usage_id it has.
 //
 // A key holder's read (below) sees only the machine that answered it, which
 // is the nearest region and so normally the one serving its requests. Budget
@@ -15,7 +16,7 @@
 // and must not share an import). If you change it here, change the mirror in
 // the gateway api's poller contract in the same release.
 //
-//   GET /usage?since=<id>&limit=<n>&key_id=<id>&jti=<id>&name=<label>
+//   GET /usage?since=<id>&after=<usage_id>&limit=<n>&key_id=<id>&jti=<id>&name=<label>
 //   Auth: Authorization: Bearer <CONTROL_PLANE_POLL_TOKEN>
 //         (a shared internal service-to-service secret — NOT a user credential.
 //          The legacy HMAC-JWT path is retired; there is no SESSION_JWT_SECRET.)
@@ -32,7 +33,10 @@
 //     {
 //       "rows": [
 //         {
-//           "id": number,            // monotonic PK, the poller's cursor
+//           "id": number,            // this machine's row id (key holders' `since`)
+//           "usage_id": string | null, // UUIDv7, unique everywhere (poller's
+//                                    //  key; null on rows from before 0005)
+//           "machine_id": string | null, // Fly machine that served the call
 //           "key_id": string,        // the gateway row PK (ADR 0001 §8)
 //           "jti": string,           // alias = key_id (poll-contract parity)
 //           "name": string,          // human label set at mint time
@@ -47,7 +51,6 @@
 //           "created_at": string     // ISO 8601 UTC
 //         }
 //       ],
-//       "store_id": string,          // this machine's file (migration 0004)
 //       "max_id": number | null,     // highest id in this page, null if empty
 //       "totals": {                  // summed over the returned `rows` only
 //         "requests": number,
@@ -59,6 +62,8 @@
 //       }
 //     }
 //
+// `after` (the poller) returns rows with usage_id > after, ordered by
+// usage_id; without it rows come ordered by id from `since`.
 // `since` defaults to 0 (all rows). `limit` defaults to 5000, capped at 5000.
 // `key_id`, `jti` (alias of key_id — same column) and `name` are optional
 // equality filters, combinable with each other and with `since`/`limit`.
@@ -67,7 +72,7 @@
 
 import { Hono } from "@hono/hono";
 import { env } from "../env.ts";
-import { stmt, storeId } from "../db.ts";
+import { stmt } from "../db.ts";
 import { extractCredential, verifyCredential } from "../auth.ts";
 
 export const usage = new Hono();
@@ -86,8 +91,10 @@ usage.all("/", async (c) => {
   const requestedLimit = Number(url.searchParams.get("limit") ?? 5000) || 5000;
   const limit = Math.min(5000, Math.max(1, requestedLimit));
 
-  const conditions = ["id > ?"];
-  const params: Array<string | number> = [since];
+  // The poller pages by usage_id; key holders by this machine's row id.
+  const after = url.searchParams.get("after");
+  const conditions = after ? ["usage_id > ?"] : ["id > ?"];
+  const params: Array<string | number> = [after ?? since];
 
   if (!presented || presented !== env.CONTROL_PLANE_POLL_TOKEN) {
     const cred = await verifyCredential(extractCredential(c.req.raw.headers));
@@ -119,13 +126,13 @@ usage.all("/", async (c) => {
   params.push(limit);
 
   const rows = stmt(
-    `SELECT id, key_id, jti, name, parent_key_id, root_key_id, model,
+    `SELECT id, usage_id, machine_id, key_id, jti, name, parent_key_id, root_key_id, model,
               input_tokens, output_tokens,
               cache_read_tokens, cache_write_tokens,
               cost_usd, created_at
          FROM usage_log
         WHERE ${conditions.join(" AND ")}
-        ORDER BY id ASC
+        ORDER BY ${after ? "usage_id" : "id"} ASC
         LIMIT ?`,
   ).all(...params) as Array<{
     id: number;
@@ -173,7 +180,6 @@ usage.all("/", async (c) => {
       // a real timestamptz without a timezone-interpretation footgun.
       created_at: `${r.created_at.replace(" ", "T")}Z`,
     })),
-    store_id: storeId(),
     max_id,
     totals,
   });
