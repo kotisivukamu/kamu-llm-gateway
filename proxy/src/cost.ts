@@ -30,7 +30,9 @@ function num(v: unknown): number {
 
 // Pulls normalised usage out of a single parsed JSON object, covering both the
 // Anthropic Messages shape (usage.input_tokens excludes the cache_* buckets,
-// which arrive as separate fields) and the OpenAI-compatible shape
+// which arrive as separate fields; OpenAI's gpt-4o-*-transcribe responses
+// share it: input_tokens = audio + text, no cache fields) and the
+// OpenAI-compatible shape
 // (usage.prompt_tokens INCLUDES cached tokens; the cached share is reported in
 // prompt_tokens_details.cached_tokens, or prompt_cache_hit_tokens on DeepSeek's
 // native API).
@@ -149,15 +151,22 @@ export function extractUsageFromSse(text: string): NormUsage | null {
 // Catalog entries without explicit cache rates fall back to the Anthropic
 // multipliers (read = 0.1x input, write = 1.25x input) — over-counting on
 // providers that don't surcharge writes, which is the safe direction for a
-// spend cap.
+// spend cap. A model with a long_context tier is billed entirely at the tier's
+// rates once the prompt (all three input buckets) crosses its threshold.
 export function computeCostUsd(model: ModelEntry, usage: NormUsage): number {
-  const readRate = model.cache_read_cost_per_mtok_usd ??
-    model.input_cost_per_mtok_usd * 0.1;
-  const writeRate = model.cache_write_cost_per_mtok_usd ??
-    model.input_cost_per_mtok_usd * 1.25;
+  const prompt = usage.input_tokens + usage.cache_read_tokens +
+    usage.cache_write_tokens;
+  const rates =
+    model.long_context && prompt > model.long_context.above_prompt_tokens
+      ? model.long_context
+      : model;
+  const readRate = rates.cache_read_cost_per_mtok_usd ??
+    rates.input_cost_per_mtok_usd * 0.1;
+  const writeRate = rates.cache_write_cost_per_mtok_usd ??
+    rates.input_cost_per_mtok_usd * 1.25;
   return (
-    usage.input_tokens * model.input_cost_per_mtok_usd +
-    usage.output_tokens * model.output_cost_per_mtok_usd +
+    usage.input_tokens * rates.input_cost_per_mtok_usd +
+    usage.output_tokens * rates.output_cost_per_mtok_usd +
     usage.cache_read_tokens * readRate +
     usage.cache_write_tokens * writeRate
   ) / 1_000_000;

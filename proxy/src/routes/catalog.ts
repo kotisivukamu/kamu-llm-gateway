@@ -45,6 +45,7 @@ catalog.get("/", async (c) => {
         output_cost_per_mtok_usd: m.output_cost_per_mtok_usd,
         cache_read_cost_per_mtok_usd: m.cache_read_cost_per_mtok_usd ?? null,
         cache_write_cost_per_mtok_usd: m.cache_write_cost_per_mtok_usd ?? null,
+        long_context: m.long_context ?? null,
       })),
   });
 });

@@ -26,6 +26,34 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
+// Upper bound for a buffered multipart body. OpenAI caps transcription
+// uploads at 25 MB per file; the extra MiB covers the multipart envelope and
+// the small text fields (model, language, prompt) riding next to the file.
+export const MAX_MULTIPART_BYTES = 26 * 1024 * 1024;
+
+// Read a request body into memory, giving up (null) as soon as it exceeds
+// `max` so an oversized upload is never fully buffered. Content-length is not
+// trusted alone: a chunked upload carries none.
+async function readCapped(
+  body: ReadableStream<Uint8Array>,
+  max: number,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of body) {
+    total += chunk.byteLength;
+    if (total > max) return null;
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 export const proxy = new Hono();
 
 // Headers we forward to upstream. Drops hop-by-hop, cookies, and anything
@@ -143,9 +171,56 @@ proxy.all("/:provider_slug/*", async (c) => {
   if (c.req.method !== "GET" && c.req.method !== "HEAD") {
     const contentType = c.req.header("content-type") ?? "";
     const isJson = contentType.toLowerCase().includes("application/json");
+    const isMultipart = contentType.toLowerCase().includes(
+      "multipart/form-data",
+    );
 
-    // Non-JSON requests stream raw — they can't carry a model field anyway.
-    if (isJson) {
+    // Multipart (audio transcription) carries `model` as a form field. Buffer
+    // the whole form, read the field for authorization, and forward the
+    // original bytes untouched (same boundary, same file part) — re-encoding
+    // the FormData would mint a new boundary and buys nothing. Unlike the JSON
+    // path, an unparseable form is refused: passing it through would skip the
+    // model check entirely.
+    if (isMultipart) {
+      const declared = Number(c.req.header("content-length") ?? "0");
+      const bytes = declared > MAX_MULTIPART_BYTES || !c.req.raw.body
+        ? null
+        : await readCapped(c.req.raw.body, MAX_MULTIPART_BYTES);
+      if (!bytes) {
+        return c.json(
+          {
+            error: "payload_too_large",
+            detail:
+              `multipart bodies are limited to ${MAX_MULTIPART_BYTES} bytes`,
+          },
+          413,
+        );
+      }
+
+      let form: FormData;
+      try {
+        form = await new Request("http://multipart.invalid", {
+          method: "POST",
+          headers: { "content-type": contentType },
+          body: bytes,
+        }).formData();
+      } catch {
+        return c.json({ error: "invalid_multipart_body" }, 400);
+      }
+      const field = form.get("model");
+      modelInBody = typeof field === "string" ? field : null;
+
+      if (modelInBody && !isModelAllowed(token, modelInBody)) {
+        return c.json(
+          {
+            error: "model_not_allowed",
+            detail: `key "${token.name}" does not grant model=${modelInBody}`,
+          },
+          403,
+        );
+      }
+      bodyInit = bytes;
+    } else if (isJson) {
       // Read the body as text once — falling back to c.req.raw.body after a
       // failed json() would hand fetch() an already-disturbed stream
       // ("ReadableStream is locked or disturbed").
@@ -189,6 +264,7 @@ proxy.all("/:provider_slug/*", async (c) => {
         bodyInit = rawText;
       }
     } else {
+      // Any other content type streams raw; it carries no model field.
       bodyInit = c.req.raw.body;
       duplexNeeded = true;
     }
@@ -218,6 +294,8 @@ proxy.all("/:provider_slug/*", async (c) => {
       "content-length",
       String(new TextEncoder().encode(bodyInit).byteLength),
     );
+  } else if (bodyInit instanceof Uint8Array) {
+    headers.set("content-length", String(bodyInit.byteLength));
   }
 
   const init: RequestInit = {

@@ -57,6 +57,18 @@ export interface ModelEntry {
   // model). NOT for the `model` field — use upstream_model_slug for that;
   // proxy.ts places `model` after the override merge so it always wins.
   request_overrides?: Record<string, unknown>;
+  // Prompt-length price tier. When a request's prompt (fresh input + cache
+  // reads + cache writes) exceeds `above_prompt_tokens`, the WHOLE request is
+  // billed at these rates instead of the base ones — Anthropic's rule for
+  // Claude Haiku 5.5 (prompts over 100,000 tokens), where each request is
+  // priced on its own and a cache hit doesn't lower the tier.
+  long_context?: {
+    above_prompt_tokens: number;
+    input_cost_per_mtok_usd: number;
+    output_cost_per_mtok_usd: number;
+    cache_read_cost_per_mtok_usd: number;
+    cache_write_cost_per_mtok_usd: number;
+  };
 }
 
 const ANTHROPIC_PATHS: RegExp[] = [
@@ -73,8 +85,9 @@ const OPENAI_COMPAT_PATHS: RegExp[] = [
   /^\/v1\/embeddings$/,
 ];
 
-// Speech-to-text (Whisper) for voice notes and dashboard voice input. Only
-// OpenAI serves it; the body is multipart audio and passes through as-is.
+// Speech-to-text for voice notes and dashboard voice input. Only OpenAI
+// serves it; the body is multipart audio. proxy.ts buffers the form to read
+// its `model` field for authorization, then forwards the bytes unchanged.
 const OPENAI_PATHS: RegExp[] = [
   ...OPENAI_COMPAT_PATHS,
   /^\/v1\/audio\/transcriptions$/,
@@ -137,9 +150,41 @@ export const PROVIDERS: Record<string, ProviderEntry> = {
 export const MODELS: Record<string, ModelEntry> = {
   // --- Anthropic ----------------------------------------------------------
   // Cache rates from platform.claude.com pricing: cache reads bill at 0.1x
-  // the input rate; 5-minute cache writes at 1.25x. (1-hour cache writes are
-  // 2x, but nothing on our side requests the 1h TTL — if that changes these
-  // write rates must change with it.)
+  // the input rate (0.05x on Opus 5.5 and Sonnet 5.5); 5-minute cache writes
+  // at 1.25x. (1-hour cache writes are 2x, but nothing on our side requests
+  // the 1h TTL — if that changes these write rates must change with it.)
+  // The 5.5 generation, verbatim from platform.claude.com/docs/en/about-claude/pricing
+  // (read 2026-10-13). Haiku 5.5 is priced by prompt length: base rates up to
+  // 100,000 prompt tokens, 5x above that (long_context). Opus/Sonnet 5.5 bill
+  // the full 1M context at the base rate.
+  "claude-opus-5-5": {
+    provider_slug: "anthropic",
+    input_cost_per_mtok_usd: 4,
+    output_cost_per_mtok_usd: 20,
+    cache_read_cost_per_mtok_usd: 0.2,
+    cache_write_cost_per_mtok_usd: 5,
+  },
+  "claude-sonnet-5-5": {
+    provider_slug: "anthropic",
+    input_cost_per_mtok_usd: 2,
+    output_cost_per_mtok_usd: 10,
+    cache_read_cost_per_mtok_usd: 0.1,
+    cache_write_cost_per_mtok_usd: 2.5,
+  },
+  "claude-haiku-5-5": {
+    provider_slug: "anthropic",
+    input_cost_per_mtok_usd: 0.1,
+    output_cost_per_mtok_usd: 0.5,
+    cache_read_cost_per_mtok_usd: 0.01,
+    cache_write_cost_per_mtok_usd: 0.125,
+    long_context: {
+      above_prompt_tokens: 100_000,
+      input_cost_per_mtok_usd: 0.5,
+      output_cost_per_mtok_usd: 2.5,
+      cache_read_cost_per_mtok_usd: 0.05,
+      cache_write_cost_per_mtok_usd: 0.625,
+    },
+  },
   "claude-opus-4-7": {
     provider_slug: "anthropic",
     input_cost_per_mtok_usd: 5,
@@ -184,7 +229,8 @@ export const MODELS: Record<string, ModelEntry> = {
   // gpt-5.6 family at 1.25x input, same shape as Anthropic — the usage payload
   // returns a distinct cache_write_tokens counter alongside cached_tokens. o3
   // lists no cache-write rate, so it keeps write = 1.0x input.
-  // Deliberately a tight set: the three gpt-5.6 tiers plus o3 for reasoning.
+  // Deliberately a tight set: the three gpt-5.6 tiers plus o3 for reasoning,
+  // and the two token-billed transcription models.
   "gpt-5.6-sol": {
     provider_slug: "openai",
     input_cost_per_mtok_usd: 5,
@@ -212,6 +258,30 @@ export const MODELS: Record<string, ModelEntry> = {
     output_cost_per_mtok_usd: 8,
     cache_read_cost_per_mtok_usd: 0.5,
     cache_write_cost_per_mtok_usd: 2,
+  },
+  // Transcription (POST /v1/audio/transcriptions, multipart). Same pricing
+  // page (read 2026-10-13), "Transcription models" table: one input rate per
+  // 1M tokens and one output rate. OpenAI publishes no separate audio-vs-text
+  // input rate and no cached-input rate for these, so the response's
+  // usage.input_tokens (audio + prompt text, per input_token_details) is all
+  // billed at the input rate; cost.ts reads that shape as-is. Cache rates are
+  // set to the input rate only to stop cost.ts's Anthropic fallback; the API
+  // never reports cache tokens here. whisper-1 is deliberately absent: it is
+  // billed per minute and reports usage as {type: "duration", seconds}, which
+  // carries no tokens, so it passes through unpriced.
+  "gpt-4o-transcribe": {
+    provider_slug: "openai",
+    input_cost_per_mtok_usd: 2.5,
+    output_cost_per_mtok_usd: 10,
+    cache_read_cost_per_mtok_usd: 2.5,
+    cache_write_cost_per_mtok_usd: 2.5,
+  },
+  "gpt-4o-mini-transcribe": {
+    provider_slug: "openai",
+    input_cost_per_mtok_usd: 1.25,
+    output_cost_per_mtok_usd: 5,
+    cache_read_cost_per_mtok_usd: 1.25,
+    cache_write_cost_per_mtok_usd: 1.25,
   },
 
   // --- Moonshot (native, api.moonshot.ai) ---------------------------------
