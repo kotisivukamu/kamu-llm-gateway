@@ -29,6 +29,14 @@
 ALTER ROLE app_user PASSWORD '<SET-VIA-DOPPLER>';
 ALTER ROLE admin_role PASSWORD '<SET-VIA-DOPPLER>';
 
+-- Read-only reporting login for the kotisivukamu internal dashboard
+-- (internal-api LLM_GATEWAY_DATABASE_URL). Membership in the NOLOGIN
+-- llm_usage_reader group (20261013075730) gives column-level SELECT on
+-- usage_log/keys/teams plus RLS SELECT policies; nothing else. One login per
+-- consumer, so it can be revoked on its own.
+CREATE ROLE kotisivukamu_usage_reader LOGIN PASSWORD '<SET-VIA-DOPPLER>'
+  CONNECTION LIMIT 5 IN ROLE llm_usage_reader;
+
 -- After running this once against a real instance:
 --   1. Generate real, distinct passwords for both roles (a password
 --      manager or `openssl rand -base64 32`, not this file, not an agent).
