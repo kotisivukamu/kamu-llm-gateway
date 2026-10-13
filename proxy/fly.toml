@@ -22,6 +22,12 @@ kill_timeout = "15s"
   KAMUSTATUS_INGEST_URL = "https://kamustatus-ingest.fly.dev"
   KAMUSTATUS_INGEST_KEY = "ksts_ef6c7507108d4236828c7eaa3c094665aa62935a25294a7f9eaa88224fc3d998"
 
+# Secrets (Doppler -> Fly secrets, never in this file): GATEWAY_DATABASE_URL,
+# ED25519_PUBLIC_KEY, ED25519_KEY_ID, CONTROL_PLANE_POLL_TOKEN and one key per
+# upstream provider: ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY,
+# MOONSHOT_API_KEY, CORTECS_API_KEY, TENSORX_API_KEY, GEMINI_API_KEY. A
+# provider whose key is unset answers 502 provider_key_missing.
+
 [mounts]
   source = "proxy_data"
   destination = "/data"

@@ -306,9 +306,13 @@ proxy.all("/:provider_slug/*", async (c) => {
   };
   if (duplexNeeded) (init as { duplex?: string }).duplex = "half";
 
+  const prefix = provider.strip_path_prefix;
+  const forwardedPath = prefix && upstreamPath.startsWith(`${prefix}/`)
+    ? upstreamPath.slice(prefix.length)
+    : upstreamPath;
   const upstreamUrl = `${
     provider.base_url.replace(/\/$/, "")
-  }${upstreamPath}${url.search}`;
+  }${forwardedPath}${url.search}`;
 
   const upstream = await fetch(upstreamUrl, init);
 

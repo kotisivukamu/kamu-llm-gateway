@@ -24,6 +24,11 @@ export interface ProviderEntry {
   // Path allowlist on the upstream. The proxy refuses anything outside this
   // set so a compromised caller can't pivot into org/admin endpoints.
   allowed_paths: RegExp[];
+  // Prefix removed from the caller's path before it is appended to base_url.
+  // For upstreams whose OpenAI-compatible surface does not sit under /v1:
+  // callers keep sending /v1/chat/completions (and the allowlist is checked
+  // against that), the upstream gets the path without the prefix.
+  strip_path_prefix?: string;
 }
 
 export interface ModelEntry {
@@ -141,6 +146,18 @@ export const PROVIDERS: Record<string, ProviderEntry> = {
     auth_style: "bearer",
     api_key_env_var: "TENSORX_API_KEY",
     allowed_paths: OPENAI_COMPAT_PATHS,
+  },
+  // Google Gemini API through its OpenAI-compatible layer, which lives at
+  // /v1beta/openai/chat/completions rather than /v1/chat/completions -- hence
+  // the stripped prefix. NOT an EU-residency provider: the Gemini API gives no
+  // region guarantee (Vertex AI would), so this is for our own use and
+  // experiments until that is settled, not a default for customer text.
+  google: {
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    auth_style: "bearer",
+    api_key_env_var: "GEMINI_API_KEY",
+    allowed_paths: OPENAI_COMPAT_PATHS,
+    strip_path_prefix: "/v1",
   },
 };
 
@@ -376,6 +393,46 @@ export const MODELS: Record<string, ModelEntry> = {
   // deepseek-v4-flash retired 2026-10-09: replaced by deepseek-v4.1-flash on
   // cortecs (below). DeepSeek now serves the old slug as V4.1 at V4.1 prices,
   // so the 0.14/0.28 row here had become wrong too.
+
+  // --- Google Gemini (native, OpenAI-compatible layer) --------------------
+  // Prices from ai.google.dev/gemini-api/docs/pricing (read 2026-09-28), paid
+  // tier, Standard, USD per 1M tokens, prompts <= 200k tokens. Output price
+  // includes thinking tokens, which the usage block reports only as the gap
+  // between total_tokens and prompt + completion (see cost.ts). Google does
+  // not surcharge cache writes; cache storage is billed per hour and is not
+  // modelled here. gemini-3.8-flash is on an introductory price through
+  // 2026-12-31 and DOUBLES on 2027-01-01 (1.50 / 7.50 / 0.15): update then.
+  "gemini-3.8-flash": {
+    provider_slug: "google",
+    input_cost_per_mtok_usd: 0.75,
+    output_cost_per_mtok_usd: 3.75,
+    cache_read_cost_per_mtok_usd: 0.075,
+    cache_write_cost_per_mtok_usd: 0.75,
+  },
+  // The cheap tier. 3.1 Flash-Lite did a Finnish polish as well as 3.8 Flash
+  // in 1.2 s against 2.8 s (2026-09-28); neither Lite model has an
+  // introductory price, so these rates do not change at the turn of the year.
+  "gemini-3.1-flash-lite": {
+    provider_slug: "google",
+    input_cost_per_mtok_usd: 0.25,
+    output_cost_per_mtok_usd: 1.5,
+    cache_read_cost_per_mtok_usd: 0.025,
+    cache_write_cost_per_mtok_usd: 0.25,
+  },
+  "gemini-3.5-flash-lite": {
+    provider_slug: "google",
+    input_cost_per_mtok_usd: 0.3,
+    output_cost_per_mtok_usd: 2.5,
+    cache_read_cost_per_mtok_usd: 0.03,
+    cache_write_cost_per_mtok_usd: 0.3,
+  },
+  "gemini-3.1-pro-preview": {
+    provider_slug: "google",
+    input_cost_per_mtok_usd: 2,
+    output_cost_per_mtok_usd: 12,
+    cache_read_cost_per_mtok_usd: 0.2,
+    cache_write_cost_per_mtok_usd: 2,
+  },
 
   // --- Cortecs aggregator (EU-only) ---------------------------------------
   // Slugs are Cortecs' own (GET api.cortecs.ai/v1/models). Prices are what

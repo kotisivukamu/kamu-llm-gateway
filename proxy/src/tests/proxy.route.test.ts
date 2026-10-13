@@ -6,8 +6,8 @@ import { gateway, getSpentUsd } from "../gateway-db.ts";
 import { stmt } from "../db.ts";
 import { MAX_MULTIPART_BYTES, proxy } from "../routes/proxy.ts";
 
-// POST /llm/openai/v1/audio/transcriptions through the real proxy route, with
-// api.openai.com replaced by a fetch stub. Keys are real llm.keys rows (the
+// The real /llm proxy route (multipart transcription, provider path
+// handling) with the upstream replaced by a fetch stub. Keys are real llm.keys rows (the
 // same verification path as production); usage lands in the in-memory SQLite
 // ledger and, for budgeted keys, the Postgres spend ledger.
 
@@ -251,7 +251,45 @@ Deno.test({
 });
 
 Deno.test({
-  name: "transcription: close pools",
+  name: "google: /v1 is stripped before the Gemini OpenAI-compatible base",
+  fn: async () => {
+    const key = await seedKey(["gemini-3.1-flash-lite"]);
+    Deno.env.set("GEMINI_API_KEY", "gemini-test-upstream");
+    const reply = {
+      choices: [{ message: { role: "assistant", content: "Hei" } }],
+      usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 40 },
+    };
+    await withUpstream(reply, async (calls) => {
+      const res = await app.request("/llm/google/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.secret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gemini-3.1-flash-lite",
+          messages: [{ role: "user", content: "Moi" }],
+        }),
+      });
+      assertEquals(res.status, 200);
+      assertEquals(
+        calls[0].url,
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      );
+      assertEquals(
+        calls[0].headers.get("authorization"),
+        "Bearer gemini-test-upstream",
+      );
+    });
+    const [row] = await usageRows(key.id, 1);
+    assertEquals(row.output_tokens, 30);
+    assertAlmostEquals(row.cost_usd!, (10 * 0.25 + 30 * 1.5) / 1e6, 1e-12);
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "proxy route: close pools",
   fn: async () => {
     await admin.end();
     await gateway.end();

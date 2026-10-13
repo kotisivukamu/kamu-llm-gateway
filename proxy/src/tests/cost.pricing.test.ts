@@ -1,6 +1,10 @@
 import { assertAlmostEquals, assertEquals } from "@std/assert";
 import { MODELS } from "../catalog.ts";
-import { computeCostUsd, extractUsageFromJson } from "../cost.ts";
+import {
+  computeCostUsd,
+  extractUsageFromJson,
+  extractUsageFromSse,
+} from "../cost.ts";
 
 // Pricing rules in cost.ts that depend on catalog shape rather than plain
 // per-token multiplication.
@@ -70,5 +74,35 @@ Deno.test("whisper-1 duration usage yields nothing to price", () => {
       usage: { type: "duration", seconds: 12 },
     }),
     null,
+  );
+});
+
+Deno.test("Gemini thinking tokens hidden in total_tokens count as output", () => {
+  const u = extractUsageFromJson({
+    usage: { prompt_tokens: 50, completion_tokens: 33, total_tokens: 380 },
+  });
+  assertEquals(u, usage(50, 330));
+  assertAlmostEquals(
+    computeCostUsd(MODELS["gemini-3.8-flash"], u!),
+    (50 * 0.75 + 330 * 3.75) / 1e6,
+    1e-12,
+  );
+});
+
+Deno.test("Gemini hidden thinking tokens are counted on a streamed response too", () => {
+  const sse = [
+    `data: {"choices":[{"delta":{"content":"Hei"}}]}`,
+    `data: {"choices":[],"usage":{"prompt_tokens":50,"completion_tokens":33,"total_tokens":380}}`,
+    "data: [DONE]",
+  ].join("\n\n");
+  assertEquals(extractUsageFromSse(sse), usage(50, 330));
+});
+
+Deno.test("total_tokens equal to the plain sum adds nothing", () => {
+  assertEquals(
+    extractUsageFromJson({
+      usage: { prompt_tokens: 50, completion_tokens: 33, total_tokens: 83 },
+    }),
+    usage(50, 33),
   );
 });

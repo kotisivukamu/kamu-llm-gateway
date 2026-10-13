@@ -28,6 +28,18 @@ function num(v: unknown): number {
   return typeof v === "number" ? v : 0;
 }
 
+// Gemini's OpenAI layer leaves thinking tokens out of completion_tokens
+// and shows them only in total_tokens, while billing them as output. The
+// gap is zero on every other provider, where total is the plain sum.
+function completionWithHiddenThinking(u: Json): number {
+  const completion = num(u.completion_tokens);
+  const unreported = Math.max(
+    0,
+    num(u.total_tokens) - u.prompt_tokens - completion,
+  );
+  return completion + unreported;
+}
+
 // Pulls normalised usage out of a single parsed JSON object, covering both the
 // Anthropic Messages shape (usage.input_tokens excludes the cache_* buckets,
 // which arrive as separate fields; OpenAI's gpt-4o-*-transcribe responses
@@ -59,7 +71,7 @@ function usageFromObject(obj: Json): NormUsage | null {
       num(u.prompt_cache_hit_tokens);
     return {
       input_tokens: Math.max(0, u.prompt_tokens - cached),
-      output_tokens: num(u.completion_tokens),
+      output_tokens: completionWithHiddenThinking(u),
       cache_read_tokens: cached,
       cache_write_tokens: 0,
     };
@@ -129,10 +141,11 @@ export function extractUsageFromSse(text: string): NormUsage | null {
       output = u.output_tokens;
       seen = true;
     }
-    if (
-      typeof u.completion_tokens === "number" && u.completion_tokens > output
-    ) {
-      output = u.completion_tokens;
+    if (typeof u.completion_tokens === "number") {
+      const completion = typeof u.prompt_tokens === "number"
+        ? completionWithHiddenThinking(u)
+        : u.completion_tokens;
+      if (completion > output) output = completion;
       seen = true;
     }
   }
