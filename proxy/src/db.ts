@@ -141,6 +141,23 @@ export function uuidv7(now = Date.now()): string {
   }-${h.slice(20)}`;
 }
 
+// The lowest (ms, counter) any later uuidv7() in this process can return.
+// Every row with a smaller usage_id is already in usage_log: the id is made
+// and inserted in the same synchronous call (recordUsage). /usage merges
+// machines only up to the lowest such floor, so a row that lands on one
+// machine after another machine's newer rows were read is not skipped.
+// Advances lastMs to now so a clock stepping back cannot go under the floor.
+export function usageFloor(now = Date.now()): { ms: number; seq: number } {
+  if (now > lastMs) {
+    lastMs = now;
+    seq = -1; // the next uuidv7() in this ms gets counter 0
+    return { ms: now, seq: 0 };
+  }
+  return seq < 0xfff
+    ? { ms: lastMs, seq: seq + 1 }
+    : { ms: lastMs + 1, seq: 0 };
+}
+
 // One completed upstream request's usage. cost_usd is null when the model had
 // no catalog price — token counts are still recorded so the gap is visible.
 export interface UsageRecord {
