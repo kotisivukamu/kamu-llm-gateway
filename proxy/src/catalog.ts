@@ -246,8 +246,8 @@ export const MODELS: Record<string, ModelEntry> = {
   // gpt-5.6 family at 1.25x input, same shape as Anthropic — the usage payload
   // returns a distinct cache_write_tokens counter alongside cached_tokens. o3
   // lists no cache-write rate, so it keeps write = 1.0x input.
-  // Deliberately a tight set: the three gpt-5.6 tiers plus o3 for reasoning,
-  // and the two token-billed transcription models.
+  // Deliberately a tight set: the three gpt-5.6 tiers, gpt-6-luna, o3 for
+  // reasoning, and the two token-billed transcription models.
   "gpt-5.6-sol": {
     provider_slug: "openai",
     input_cost_per_mtok_usd: 5,
@@ -268,6 +268,24 @@ export const MODELS: Record<string, ModelEntry> = {
     output_cost_per_mtok_usd: 1.2,
     cache_read_cost_per_mtok_usd: 0.02,
     cache_write_cost_per_mtok_usd: 0.25,
+  },
+  // gpt-6-luna: same pricing page, read 2026-10-15. Short context (up to
+  // 272K input tokens) 0.10 / cached 0.01 / cache write 0.125 / output 0.50;
+  // long context (>272K input) 0.20 / 0.02 / 0.25 / 0.75. Added to be tried
+  // as kotisivukamu's chat model next to Haiku 5.5 and DeepSeek V4.1 Flash.
+  "gpt-6-luna": {
+    provider_slug: "openai",
+    input_cost_per_mtok_usd: 0.1,
+    output_cost_per_mtok_usd: 0.5,
+    cache_read_cost_per_mtok_usd: 0.01,
+    cache_write_cost_per_mtok_usd: 0.125,
+    long_context: {
+      above_prompt_tokens: 272_000,
+      input_cost_per_mtok_usd: 0.2,
+      output_cost_per_mtok_usd: 0.75,
+      cache_read_cost_per_mtok_usd: 0.02,
+      cache_write_cost_per_mtok_usd: 0.25,
+    },
   },
   o3: {
     provider_slug: "openai",
