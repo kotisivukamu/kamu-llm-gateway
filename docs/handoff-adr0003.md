@@ -236,14 +236,18 @@ For the kamuhub billing worker's daily cortecs price sync (the scheduled job ADR
 0003's Consequences call for). Lives in `api/src/routes/internal.ts`, mounted at
 the root next to `GET /usage`, outside `/api`.
 
-- **Auth**: the key-holder credential of `GET /usage`
-  (`verifyGatewayCredential`: `x-api-key` or bearer), plus scope `prices:write`
-  on an **active top-level** key. Unknown, revoked or expired → 401; no scope, a
-  derived key, or an `over_budget` key → 403.
-- **Scopes**: `llm.keys.scopes text[] not null default '{}'` (migration
-  `20261016170000_key_scopes`), `KeyScope` in `shared/types.ts`. Check
-  `keys_scopes_top_only` keeps them off derived rows; derive inserts `'{}'`
-  regardless of the parent.
+- **Auth**: `Authorization: Bearer <INTERNAL_API_TOKEN>`, a service secret in
+  the api env (required, like `CONTROL_PLANE_POLL_TOKEN`), compared in constant
+  time (SHA-256 digests + `timingSafeEqual`). Anything else is 401. Gateway
+  keys are not accepted on `/internal/*` at all, by bearer or `x-api-key`:
+  writing what every key is billed is not a key holder's right.
+- **No key scopes.** The first cut (8b3fdfe, 9ce357a) gated this on a
+  `prices:write` scope in `llm.keys.scopes`; the owner ruled price writes must
+  not be something a gateway key can do. Migration
+  `20261016190000_drop_key_scopes` drops the column and the
+  `keys_scopes_top_only` CHECK again (the released `20261016170000_key_scopes`
+  stays as applied), and the scope code is gone from `shared/types.ts`, derive,
+  the admin mint form/JSON API/key list and tests.
 - **`GET /internal/prices`** →
   `{ models: [{ model, provider_slug,
   upstream_model, long_context, price }] }`
@@ -267,42 +271,40 @@ the root next to `GET /usage`, outside `/api`.
   precision). If the price in effect at `valid_from` (DB row or catalog) already
   has the same five rates → `200 { unchanged:
   true, price }`, no row; else
-  `201 { unchanged: false, price }` with `created_by = key:<key label>`. A
+  `201 { unchanged: false, price }` with `created_by = internal:price-sync`. A
   posted price equal to the catalog is therefore not inserted. The insert clears
   this machine's price cache, so its ingest uses the row at once; other api
   machines within 30 s. Two concurrent identical POSTs can both insert
   (harmless, append-only).
-- Tests: `api/src/tests/internal-prices.test.ts` (scope gate incl. derived,
-  over_budget and revoked; GET shape; insert, unchanged, catalog-equal, second
-  row; validation incl. long-context; ingest uses the posted row past a warm
-  cache). api 45/45, proxy 52/52, admin 5/5, `deno task validate` clean for
-  api/proxy/admin, api and admin images build.
+- Tests: `api/src/tests/internal-prices.test.ts` (token gate: none, wrong, a
+  prefix/suffix of the token, and a valid active gateway key by bearer and
+  `x-api-key` are all 401, the token gets 200/201; GET shape; insert,
+  unchanged, catalog-equal, second row; validation incl. long-context; ingest
+  uses the posted row past a warm cache). api 45/45, proxy 52/52, admin 5/5,
+  `deno task validate` clean for api/proxy/admin.
 
-### Minting the kamuhub key (prod)
+### Setting up the token (prod)
 
-After the gateway release that carries the migration:
+One shared secret, two places:
 
-1. Admin app (`https://llm-proxy-admin.fly.dev/keys`): pick the platform org,
-   label `kamuhub-billing-worker`, tick `prices:write`, Create key. Copy the
-   secret (shown once). Or the JSON API with an admin session:
-   `POST /api/keys {"team_id": "...", "label": "kamuhub-billing-worker",
-   "scopes": ["prices:write"]}`.
-2. An existing top-level key can be given the scope by hand instead:
-   `UPDATE llm.keys SET scopes = '{prices:write}' WHERE id = '<key id>' AND
-   key_type = 'top';`
-3. Put the secret in kamuhub's billing-worker env (Doppler → Fly secret), with
-   the api URL `https://kamu-llm-gateway-api.fly.dev`.
+1. Generate it: `openssl rand -base64 32`.
+2. Gateway api: `INTERNAL_API_TOKEN` in Doppler `kamu-llm-proxy/prd_api` (the
+   Fly secrets of `kamu-llm-gateway-api`). The api refuses to start without
+   it, so set it **before** deploying the release that carries this change.
+3. kamuhub billing worker: the same value as `KAMU_LLM_INTERNAL_TOKEN`
+   (Doppler, then Fly secret), with the api URL
+   `https://kamu-llm-gateway-api.fly.dev`.
 
-The key has `models = ["*"]`, so it can also call models through the proxy; give
-it a small `budget_usd` if that matters.
+Rotating means setting the new value on both sides; calls get 401 in between.
 
 ```bash
-KEY=sk_live_...
+TOKEN=...   # INTERNAL_API_TOKEN
 API=https://kamu-llm-gateway-api.fly.dev
 
-curl -s -H "x-api-key: $KEY" $API/internal/prices | jq '.models[0]'
+curl -s -H "Authorization: Bearer $TOKEN" $API/internal/prices | jq '.models[0]'
 
-curl -s -X POST -H "x-api-key: $KEY" -H 'content-type: application/json' \
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
   $API/internal/prices -d '{
     "model": "glm-5.3",
     "input_cost_per_mtok_usd": 0.9058,
