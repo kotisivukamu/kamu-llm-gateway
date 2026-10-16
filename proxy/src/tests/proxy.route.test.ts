@@ -304,7 +304,7 @@ Deno.test({
         },
       },
     };
-    // No usage block: Jev bills per request, so the row is logged anyway.
+    // No usage block: the row is logged anyway (per_request_cost_usd is set).
     const reply = {
       model: "jev-2026-10",
       answers: {

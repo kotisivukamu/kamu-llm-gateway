@@ -726,20 +726,26 @@ export const MODELS: Record<string, ModelEntry> = {
   },
 
   // --- Jev (TypeSafe System One) ------------------------------------------
-  // Billed per request, not per token, so the token rates are zero and every
-  // call is metered through per_request_cost_usd (one usage_log row per
-  // request, token columns filled only if a response ever reports usage).
-  // TODO: Jev's per-request price is not known yet. Fill per_request_cost_usd
-  // from TypeSafe's pricing or invoice once we have it; until then Jev calls
-  // are logged per key at cost 0 (and do not count against key budgets).
-  "jev-latest": {
-    provider_slug: "jev",
-    input_cost_per_mtok_usd: 0,
-    output_cost_per_mtok_usd: 0,
-    cache_read_cost_per_mtok_usd: 0,
-    cache_write_cost_per_mtok_usd: 0,
-    per_request_cost_usd: 0,
-  },
+  // TypeSafe docs (Models page, 2026-10-16): $0.042 per million input tokens,
+  // output tokens free, no per-request charge; same price for every version
+  // and for long context. The response carries usage.input_tokens, so cost
+  // comes from tokens. per_request_cost_usd stays 0 only so a call is still
+  // logged per key if a response ever lacks usage. Aliases move between
+  // versions (jev-latest -> jev-1.13.0, jev-preview -> jev-1.14.0), so the
+  // versioned ids are listed too: a caller pinning one is metered as well.
+  ...Object.fromEntries(
+    ["jev-latest", "jev-preview", "jev-1.13.0", "jev-1.14.0"].map((slug) => [
+      slug,
+      {
+        provider_slug: "jev",
+        input_cost_per_mtok_usd: 0.042,
+        output_cost_per_mtok_usd: 0,
+        cache_read_cost_per_mtok_usd: 0,
+        cache_write_cost_per_mtok_usd: 0,
+        per_request_cost_usd: 0,
+      },
+    ]),
+  ),
 };
 
 export function getProvider(slug: string): ProviderEntry | null {

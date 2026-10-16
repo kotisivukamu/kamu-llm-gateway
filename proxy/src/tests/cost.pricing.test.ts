@@ -120,6 +120,12 @@ Deno.test("per_request_cost_usd is charged once per request on top of token cost
     0.003 + (1_000 * 1 + 500 * 2) / 1e6,
     1e-12,
   );
-  // jev-latest: price unknown, logged at 0 until the catalog TODO is filled.
+  // Jev: $0.042 per million input tokens, output free, no per-request charge.
   assertEquals(computeCostUsd(MODELS["jev-latest"], usage(0, 0)), 0);
+  assertAlmostEquals(
+    computeCostUsd(MODELS["jev-latest"], usage(418, 33)),
+    418 * 0.042 / 1e6,
+    1e-15,
+  );
+  assertEquals(MODELS["jev-1.14.0"], MODELS["jev-latest"]);
 });
