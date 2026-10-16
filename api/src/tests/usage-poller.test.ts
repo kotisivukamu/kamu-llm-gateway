@@ -457,3 +457,57 @@ Deno.test(
     assertEquals(await keyStatus(keyId), "revoked");
   },
 );
+
+// --- Raising a budget reactivates (ADR 0003 §4) ------------------------------
+
+async function setBudget(keyId: string, budget: number | null) {
+  await adminSql`UPDATE llm.keys SET budget_usd = ${budget} WHERE id = ${keyId}`;
+}
+
+Deno.test(
+  "budget raise: an over_budget key goes back to active once spend is under it",
+  T,
+  async () => {
+    await resetDb();
+    await addPrice("2026-01-01T00:00:00Z", 1);
+    const team = await seedTeam();
+    const keyId = await seedKey({ teamId: team.id, budgetUsd: 1 });
+    await poll([dollarRow(keyId, keyId)]);
+    assertEquals(await keyStatus(keyId), "over_budget");
+
+    await setBudget(keyId, 1); // equal to spend: still over
+    assertEquals(await keyStatus(keyId), "over_budget");
+    await setBudget(keyId, 0.5); // lowered: still over
+    assertEquals(await keyStatus(keyId), "over_budget");
+    await setBudget(keyId, 3);
+    assertEquals(await keyStatus(keyId), "active");
+
+    // And ingest flips it again once spend catches up.
+    await poll([dollarRow(keyId, keyId), dollarRow(keyId, keyId)]);
+    assertEquals(await keyStatus(keyId), "over_budget");
+  },
+);
+
+Deno.test("budget raise: removing the budget reactivates", T, async () => {
+  await resetDb();
+  const team = await seedTeam();
+  const keyId = await seedKey({
+    teamId: team.id,
+    budgetUsd: 1,
+    status: "over_budget",
+  });
+  await setBudget(keyId, null);
+  assertEquals(await keyStatus(keyId), "active");
+});
+
+Deno.test("budget raise: a revoked key stays revoked", T, async () => {
+  await resetDb();
+  const team = await seedTeam();
+  const keyId = await seedKey({
+    teamId: team.id,
+    budgetUsd: 1,
+    status: "revoked",
+  });
+  await setBudget(keyId, 100);
+  assertEquals(await keyStatus(keyId), "revoked");
+});
