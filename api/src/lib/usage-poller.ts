@@ -18,20 +18,32 @@
 // minus a 10 s overlap so a row stamped just before a clock step is not
 // skipped. Any other URL (local dev, tests) is polled as the single proxy.
 //
+// Every inserted row is priced here, once (ADR 0003 §2): see lib/pricing.ts
+// for which price applies. The proxy feed still carries its own cost_usd
+// until it stops pricing; that value is ignored. With INGEST_KEY_SPEND on,
+// the same transaction adds the new rows' cost to llm.key_spend for each
+// row's key and root and flips keys that reached their budget to
+// 'over_budget' (§4). Only rows this poll actually inserted count, so a
+// re-poll of the overlap never charges a row twice.
+//
 // Adapted from the legacy graphile-worker task
 // (kotisivukamu/worker/src/llm_usage/poll.ts). This repo has no job queue, so
 // a setInterval loop in the api process does the same job.
 
+import type postgres from "postgres";
 import { adminSql } from "../config/db.ts";
 import { env } from "../env.ts";
 import { log } from "./logger.ts";
+import { priceTable, priceUsage } from "./pricing.ts";
 
 const PAGE_LIMIT = 5000;
 const OVERLAP_MS = 10_000;
 
 // Mirrors the proxy's GET /usage response contract (proxy/src/routes/usage.ts).
-// Duplicated on purpose — the two sides ship in different container images and
-// must not share an import. Keep in sync with the proxy if the shape changes.
+// Duplicated on purpose: the wire shape is the contract, not a shared type.
+// Keep in sync with the proxy if the shape changes. The feed's cost_usd is
+// not read (the api prices); provider_cost/provider_cost_currency are absent
+// until the proxy starts recording them.
 interface UsageRow {
   usage_id: string;
   machine_id: string;
@@ -41,7 +53,10 @@ interface UsageRow {
   model: string;
   input_tokens: number;
   output_tokens: number;
-  cost_usd: number | null;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  provider_cost?: number | null;
+  provider_cost_currency?: string | null;
   created_at: string;
 }
 
@@ -127,6 +142,28 @@ export async function pollOnce(
       throw new Error(`${origin}/usage sent rows without usage_id`);
     }
 
+    const prices = await priceTable();
+    const rows = page.rows.map((r) => {
+      const priced = priceUsage(prices, r.model, new Date(r.created_at), r);
+      return {
+        usage_id: r.usage_id,
+        machine_id: r.machine_id,
+        key_id: r.key_id,
+        parent_key_id: r.parent_key_id,
+        root_key_id: r.root_key_id,
+        model: r.model,
+        cost_usd: priced.cost_usd,
+        price_id: priced.price_id,
+        tokens_in: r.input_tokens,
+        tokens_out: r.output_tokens,
+        cache_read_tokens: r.cache_read_tokens,
+        cache_write_tokens: r.cache_write_tokens,
+        provider_cost: r.provider_cost ?? null,
+        provider_cost_currency: r.provider_cost_currency ?? null,
+        created_at: r.created_at,
+      };
+    });
+
     // Bulk insert via jsonb_populate_recordset: one JSON parameter carries
     // the whole page. Pass it through sql.json() (postgres.js's jsonb
     // Parameter helper), NOT `JSON.stringify(...)` + `${…}::json`:
@@ -134,42 +171,35 @@ export async function pollOnce(
     // infers a json/jsonb parameter, so an already-stringified page
     // double-encodes into a JSON *string scalar* and
     // `jsonb_populate_recordset` fails with "cannot call ... on a scalar".
-    const rows = page.rows.map((r) => ({
-      usage_id: r.usage_id,
-      machine_id: r.machine_id,
-      key_id: r.key_id,
-      parent_key_id: r.parent_key_id,
-      root_key_id: r.root_key_id,
-      model: r.model,
-      cost_usd: r.cost_usd,
-      tokens_in: r.input_tokens,
-      tokens_out: r.output_tokens,
-      created_at: r.created_at,
-    }));
-
-    // Explicit column list on both sides: populate_recordset yields the
-    // table's full rowtype (including id and metadata, which the proxy does
-    // not send), so `SELECT *` would not match the INSERT list.
-    //
-    // Rows whose key no longer exists are skipped, not inserted: key_id is a
-    // foreign key, so one such row would fail the whole page and stall the
-    // ledger for every key. A key is only hard-deleted when its team is
-    // (cascade), at which point its spend has no one to attribute to.
-    const result = await adminSql`
-      INSERT INTO llm.usage_log
-        (usage_id, machine_id, key_id, parent_key_id, root_key_id, model,
-         cost_usd, tokens_in, tokens_out, created_at)
-      SELECT r.usage_id, r.machine_id, r.key_id, r.parent_key_id,
-             r.root_key_id, r.model, r.cost_usd, r.tokens_in, r.tokens_out,
-             r.created_at
-      FROM jsonb_populate_recordset(null::llm.usage_log, ${
-      adminSql.json(rows)
-    }) r
-      WHERE EXISTS (SELECT 1 FROM llm.keys k WHERE k.id = r.key_id)
-      ON CONFLICT (usage_id) DO NOTHING
-      RETURNING id
-    `;
-    inserted += result.count;
+    inserted += await adminSql.begin(async (tx) => {
+      // Explicit column list on both sides: populate_recordset yields the
+      // table's full rowtype (including id and metadata, which the proxy
+      // does not send), so `SELECT *` would not match the INSERT list.
+      //
+      // Rows whose key no longer exists are skipped, not inserted: key_id is
+      // a foreign key, so one such row would fail the whole page and stall
+      // the ledger for every key. A key is only hard-deleted when its team is
+      // (cascade), at which point its spend has no one to attribute to.
+      const ins = await tx<{ usage_id: string }[]>`
+        INSERT INTO llm.usage_log
+          (usage_id, machine_id, key_id, parent_key_id, root_key_id, model,
+           cost_usd, price_id, tokens_in, tokens_out, cache_read_tokens,
+           cache_write_tokens, provider_cost, provider_cost_currency,
+           created_at)
+        SELECT r.usage_id, r.machine_id, r.key_id, r.parent_key_id,
+               r.root_key_id, r.model, r.cost_usd, r.price_id, r.tokens_in,
+               r.tokens_out, r.cache_read_tokens, r.cache_write_tokens,
+               r.provider_cost, r.provider_cost_currency, r.created_at
+        FROM jsonb_populate_recordset(null::llm.usage_log, ${tx.json(rows)}) r
+        WHERE EXISTS (SELECT 1 FROM llm.keys k WHERE k.id = r.key_id)
+        ON CONFLICT (usage_id) DO NOTHING
+        RETURNING usage_id::text
+      `;
+      if (env.INGEST_KEY_SPEND && ins.length > 0) {
+        await chargeSpend(tx, ins.map((r) => r.usage_id));
+      }
+      return ins.length;
+    });
 
     cursor = page.rows[page.rows.length - 1].usage_id;
     if (page.rows.length < PAGE_LIMIT) break;
@@ -179,6 +209,52 @@ export async function pollOnce(
     log.info("usage_poll: inserted rows", { origin, inserted });
   }
   return inserted;
+}
+
+// Adds the cost of the just-inserted rows to llm.key_spend for each row's key
+// and its root (once per row when the two are the same key, as on a
+// top-level key's own rows), then sets every charged key that is now at or
+// past its budget to 'over_budget'. Summed from the stored cost_usd so the
+// ledger matches usage_log to the cent. Unpriced and zero-cost rows are not
+// counted, which keeps request_count meaning "billed requests" as the proxy's
+// recordSpend does.
+async function chargeSpend(
+  tx: postgres.TransactionSql,
+  usageIds: string[],
+): Promise<void> {
+  const charged = await tx<{ key_id: string }[]>`
+    INSERT INTO llm.key_spend (key_id, spent_usd, request_count)
+    SELECT t.key_id, SUM(u.cost_usd), COUNT(*)
+      FROM llm.usage_log u
+      CROSS JOIN LATERAL (
+        SELECT DISTINCT k AS key_id FROM unnest(ARRAY[u.key_id, u.root_key_id]) k
+         WHERE k IS NOT NULL
+      ) t
+     WHERE u.usage_id = ANY(${usageIds}::uuid[])
+       AND u.cost_usd > 0
+       AND EXISTS (SELECT 1 FROM llm.keys k WHERE k.id = t.key_id)
+     GROUP BY t.key_id
+    ON CONFLICT (key_id) DO UPDATE SET
+      spent_usd     = llm.key_spend.spent_usd + excluded.spent_usd,
+      request_count = llm.key_spend.request_count + excluded.request_count,
+      updated_at    = now()
+    RETURNING key_id::text
+  `;
+  if (charged.length === 0) return;
+  const flipped = await tx<{ id: string }[]>`
+    UPDATE llm.keys k
+       SET status = 'over_budget', updated_at = now()
+      FROM llm.key_spend s
+     WHERE s.key_id = k.id
+       AND k.id = ANY(${charged.map((r) => r.key_id)}::uuid[])
+       AND k.status = 'active'
+       AND k.budget_usd IS NOT NULL
+       AND s.spent_usd >= k.budget_usd
+    RETURNING k.id::text
+  `;
+  for (const { id } of flipped) {
+    log.info("usage_poll: key over budget", { key_id: id });
+  }
 }
 
 // One tick: every proxy machine. A failing machine is logged and skipped;

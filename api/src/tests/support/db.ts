@@ -1,5 +1,6 @@
 import "./env.ts";
 import { adminSql } from "../../config/db.ts";
+import { clearPriceCache } from "../../lib/pricing.ts";
 
 // Test-only DB helpers against the real Postgres started for the regression
 // suite (see README "Running tests"). Uses the owner pool (adminSql) directly
@@ -8,9 +9,13 @@ import { adminSql } from "../../config/db.ts";
 
 export { adminSql };
 
-/** Wipe every row the test suite could have written, keep the schema. */
+/**
+ * Wipe every row the test suite could have written, keep the schema. Also
+ * drops the poller's cached price table, which may hold truncated rows.
+ */
 export async function resetDb(): Promise<void> {
-  await adminSql`TRUNCATE llm.usage_log, llm.keys, llm.team_members, llm.teams CASCADE`;
+  await adminSql`TRUNCATE llm.usage_log, llm.key_spend, llm.model_prices, llm.keys, llm.team_members, llm.teams CASCADE`;
+  clearPriceCache();
 }
 
 export interface TestTeam {
@@ -61,7 +66,7 @@ export interface SeedKeyOpts {
   keyType?: "top" | "derived";
   models?: string[];
   budgetUsd?: number | null;
-  status?: "active" | "revoked";
+  status?: "active" | "revoked" | "over_budget";
   parentKeyId?: string | null;
   rootKeyId?: string | null;
   expiresAt?: string | null;

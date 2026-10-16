@@ -6,7 +6,7 @@
 // (opaque secret, `parent_key_id` is null) and a derived sub-key (Ed25519-signed
 // JWT on the wire whose `jti` is the row's PK, `parent_key_id` set).
 
-export type KeyStatus = "active" | "revoked";
+export type KeyStatus = "active" | "revoked" | "over_budget";
 export type KeyType = "top" | "derived";
 
 export type Role = "owner" | "admin" | "member";
