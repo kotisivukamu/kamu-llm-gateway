@@ -10,7 +10,7 @@ import {
   type FullRates,
   parsePriceForm,
   type StoredPrice,
-} from "../lib/prices.ts";
+} from "@shared/prices.ts";
 
 // Prices (ADR 0003 §3). llm.model_prices is append-only: this page adds rows
 // and never edits or deletes one (the table's grants forbid it for

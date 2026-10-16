@@ -6,7 +6,7 @@ import {
   type NewPrice,
   parsePriceForm,
   type StoredPrice,
-} from "../lib/prices.ts";
+} from "@shared/prices.ts";
 
 // The Prices page shows what ingest charges: the latest model_prices row with
 // valid_from <= now, else the catalog (ADR 0003 §3).

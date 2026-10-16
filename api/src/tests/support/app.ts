@@ -2,6 +2,7 @@ import "./env.ts";
 import { HTTPException } from "@hono/hono/http-exception";
 import { createRouter } from "../../lib/openapi.ts";
 import { derive, keys } from "../../routes/keys.ts";
+import { internal } from "../../routes/internal.ts";
 import { keyUsage, usage } from "../../routes/usage.ts";
 
 // Builds the same route wiring as main.ts, minus the process-level side
@@ -11,6 +12,7 @@ import { keyUsage, usage } from "../../routes/usage.ts";
 export function buildTestApp() {
   const app = createRouter();
   app.route("/", keyUsage);
+  app.route("/", internal);
   app.route("/api", derive);
   app.route("/api", keys);
   app.route("/api", usage);

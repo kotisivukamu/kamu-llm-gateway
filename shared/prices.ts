@@ -1,13 +1,18 @@
-// Prices page logic (ADR 0003 §3) that needs no DB: what ingest charges per
-// model right now, and validation of a new llm.model_prices row.
+// Price-list logic (ADR 0003 §3) that needs no DB, shared by the admin Prices
+// page and the api's internal price API (POST/GET /internal/prices): what
+// ingest charges per model at a given time, and validation of a new
+// llm.model_prices row.
 //
 // Resolution is the api's: pickPrice from shared/pricing.ts (the same function
 // api/src/lib/pricing.ts priceUsage calls), else the catalog entry. The only
-// difference is the clock: ingest prices a usage row at its created_at, this
-// page at now().
+// difference is the clock: ingest prices a usage row at its created_at, the
+// callers here at now() (or a new row's valid_from).
+//
+// Unlike pricing.ts this imports the proxy catalog at runtime; the api and
+// admin images both copy proxy/src/catalog.ts next to shared/.
 
-import { pickPrice, type PriceRow, type PriceTable } from "@shared/pricing.ts";
-import { MODELS } from "../../../proxy/src/catalog.ts";
+import { pickPrice, type PriceRow, type PriceTable } from "./pricing.ts";
+import { MODELS } from "../proxy/src/catalog.ts";
 
 export interface StoredPrice extends PriceRow {
   source: string;
@@ -102,8 +107,9 @@ function parseRate(name: string, raw: string): number | string {
   return n;
 }
 
-// Validates the add-a-row form. Returns the row, or an error message.
-// valid_from is a datetime-local value read as UTC; blank means now.
+// Validates a new row (the admin add-a-row form, or the api POST body as
+// strings). Returns the row, or an error message. valid_from is an ISO date
+// or a datetime-local value read as UTC; blank means now.
 export function parsePriceForm(
   form: Record<string, string>,
 ): NewPrice | string {

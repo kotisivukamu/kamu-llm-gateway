@@ -534,14 +534,16 @@ derive.post("/keys/derive", async (c) => {
     // --- Insert the derived keys row ---
     // team_id = parent.team_id (no cross-tenant). parent_key_id + root_key_id carry the lineage. key_hash is
     // NULL for derived keys (the JWT on the wire is the credential; jti = row PK).
+    // scopes are never inherited: a derived key gets none, whatever the parent
+    // holds (keys_scopes_top_only enforces the same in the DB).
     const [row] = await tx<DerivedKeyRow[]>`
       INSERT INTO llm.keys
         (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-         status, parent_key_id, root_key_id, metadata, expires_at)
+         status, parent_key_id, root_key_id, metadata, expires_at, scopes)
       VALUES
         (${parent.team_id}, ${childLabel}, null, null, 'derived', ${childModels},
          ${childBudget}, 'active', ${parent.id}, ${parent.root_key_id},
-         ${metadataJson}::jsonb, ${childExpiresAt})
+         ${metadataJson}::jsonb, ${childExpiresAt}, '{}')
       RETURNING id, team_id, label, key_type, models, budget_usd, status,
                 parent_key_id, root_key_id, metadata, expires_at, created_at
     `;
