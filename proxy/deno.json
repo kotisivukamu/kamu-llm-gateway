@@ -1,5 +1,6 @@
 {
   "imports": {
+    "@shared/": "../shared/",
     "@hono/hono": "npm:hono@4.8.2",
     "@std/assert": "jsr:@std/assert@1",
     "jose": "npm:jose@5.9.6",

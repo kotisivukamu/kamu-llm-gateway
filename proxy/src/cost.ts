@@ -1,6 +1,7 @@
 // Turns an upstream LLM response into an estimated USD cost, using the static
-// per-model prices in catalog.ts. Runs off the hot path: proxy.ts tees the
-// response and this code prices the buffered copy in the background.
+// per-model prices in catalog.ts (the math is in shared/pricing.ts). Runs off
+// the hot path: proxy.ts tees the response and this code prices the buffered
+// copy in the background.
 //
 // Normalisation rule: usage collapses into four buckets —
 //   input_tokens        fresh (uncached) prompt tokens, billed at the input rate
@@ -12,14 +13,9 @@
 // full rate — the pre-2026-08 behaviour — over-counted real builds ~4x,
 // because cache reads dominate agentic traffic.
 
-import type { ModelEntry } from "./catalog.ts";
+import type { NormUsage } from "@shared/pricing.ts";
 
-export interface NormUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_write_tokens: number;
-}
+export type { NormUsage };
 
 // deno-lint-ignore no-explicit-any
 type Json = any;
@@ -167,28 +163,6 @@ export function extractUsageFromSse(text: string): NormUsage | null {
     : null;
 }
 
-// USD cost of one request given normalised usage and the model's catalog entry.
-// A per-request charge (per_request_cost_usd) is added on top of token cost.
-// Catalog entries without explicit cache rates fall back to the Anthropic
-// multipliers (read = 0.1x input, write = 1.25x input) — over-counting on
-// providers that don't surcharge writes, which is the safe direction for a
-// spend cap. A model with a long_context tier is billed entirely at the tier's
-// rates once the prompt (all three input buckets) crosses its threshold.
-export function computeCostUsd(model: ModelEntry, usage: NormUsage): number {
-  const prompt = usage.input_tokens + usage.cache_read_tokens +
-    usage.cache_write_tokens;
-  const rates =
-    model.long_context && prompt > model.long_context.above_prompt_tokens
-      ? model.long_context
-      : model;
-  const readRate = rates.cache_read_cost_per_mtok_usd ??
-    rates.input_cost_per_mtok_usd * 0.1;
-  const writeRate = rates.cache_write_cost_per_mtok_usd ??
-    rates.input_cost_per_mtok_usd * 1.25;
-  return (model.per_request_cost_usd ?? 0) + (
-        usage.input_tokens * rates.input_cost_per_mtok_usd +
-        usage.output_tokens * rates.output_cost_per_mtok_usd +
-        usage.cache_read_tokens * readRate +
-        usage.cache_write_tokens * writeRate
-      ) / 1_000_000;
-}
+// The cost math itself lives in shared/ so the api poller can price at
+// ingest with the same rules (ADR 0003).
+export { computeCostUsd } from "@shared/pricing.ts";
