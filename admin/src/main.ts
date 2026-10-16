@@ -7,6 +7,7 @@ import { authRoutes } from "./routes/auth.tsx";
 import { usageRoutes } from "./routes/usage.tsx";
 import { keysRoutes } from "./routes/keys.tsx";
 import { settingsRoutes } from "./routes/settings.tsx";
+import { pricesRoutes } from "./routes/prices.tsx";
 import { requireSession, type SessionEnv } from "./middleware/session.ts";
 
 adminSql<{ role: string; db: string }[]>`
@@ -36,6 +37,7 @@ app.route("/", authRoutes);
 app.route("/", usageRoutes);
 app.route("/", keysRoutes);
 app.route("/", settingsRoutes);
+app.route("/", pricesRoutes);
 
 app.get("/", requireSession, (c) => c.redirect("/usage"));
 

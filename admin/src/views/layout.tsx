@@ -38,6 +38,7 @@ export const Layout: FC<PropsWithChildren<{ title: string; admin?: string }>> =
               <a class="brand" href="/">llm-proxy-admin</a>
               <a href="/usage">Usage</a>
               <a href="/keys">Keys</a>
+              <a href="/prices">Prices</a>
               <a href="/settings">Settings</a>
               <span class="muted" style="margin-left:auto">{admin}</span>
               <form method="post" action="/logout" class="inline">
