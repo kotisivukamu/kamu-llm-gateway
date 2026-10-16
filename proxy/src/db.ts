@@ -1,8 +1,9 @@
 // SQLite persistence for LLM usage accounting, one file per proxy machine on
 // that machine's volume:
 //   - usage_log: one row per completed request for EVERY key, storing the raw
-//     token buckets + computed cost so spend can be aggregated per `key_id`
-//     and per label. Carries the lineage columns (`parent_key_id`,
+//     token buckets, the provider that served it and the provider-reported
+//     cost (ADR 0003 §1). The api prices each row at ingest; cost_usd here is
+//     only the catalog estimate key holders read on GET /usage. Carries the lineage columns (`parent_key_id`,
 //     `root_key_id`) so the gateway's durable ledger can roll spend up to a
 //     service's whole subtree (ADR 0001 §7.6). Each row carries a usage_id
 //     (UUIDv7, unique across machines and time-ordered) and the machine_id
@@ -10,8 +11,8 @@
 //     (llm.usage_log) keyed by usage_id.
 //   - token_spend: the pre-2026-10 per-key spend ledger. No longer read or
 //     written: with more than one machine a local total only saw that
-//     machine's share, so budgets now live in Postgres (llm.key_spend, see
-//     gateway-db.ts). Left in place rather than dropped.
+//     machine's share, so budgets moved to Postgres (llm.key_spend, charged
+//     by the api at ingest). Left in place rather than dropped.
 //
 // `jti` is kept as an alias = key_id for the poll contract (the control-plane
 // poller still reads `jti`); the authority column is `key_id`.
@@ -158,8 +159,9 @@ export function usageFloor(now = Date.now()): { ms: number; seq: number } {
     : { ms: lastMs + 1, seq: 0 };
 }
 
-// One completed upstream request's usage. cost_usd is null when the model had
-// no catalog price — token counts are still recorded so the gap is visible.
+// One completed upstream request's usage. cost_usd is the catalog estimate
+// (null when the model has no catalog price) and is not billed: the api
+// prices the buckets at ingest and charges budgets from that (ADR 0003).
 export interface UsageRecord {
   key_id: string;
   // jti is kept as an alias = key_id for the poll contract.
@@ -167,10 +169,12 @@ export interface UsageRecord {
   parent_key_id: string | null;
   root_key_id: string | null;
   model: string;
+  provider_slug: string;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  provider_cost: number | null;
   cost_usd: number | null;
 }
 
@@ -180,9 +184,9 @@ export function recordUsage(r: UsageRecord): void {
   stmt(
     `INSERT INTO usage_log
          (usage_id, machine_id, key_id, jti, name, parent_key_id, root_key_id,
-          model, input_tokens, output_tokens,
-          cache_read_tokens, cache_write_tokens, cost_usd)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          model, provider_slug, input_tokens, output_tokens,
+          cache_read_tokens, cache_write_tokens, provider_cost, cost_usd)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     uuidv7(),
     MACHINE_ID,
@@ -192,10 +196,12 @@ export function recordUsage(r: UsageRecord): void {
     r.parent_key_id,
     r.root_key_id,
     r.model,
+    r.provider_slug,
     r.input_tokens,
     r.output_tokens,
     r.cache_read_tokens,
     r.cache_write_tokens,
+    r.provider_cost,
     r.cost_usd,
   );
 }

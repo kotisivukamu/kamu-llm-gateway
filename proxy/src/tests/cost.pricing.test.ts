@@ -14,7 +14,13 @@ const usage = (
   output_tokens: number,
   cache_read_tokens = 0,
   cache_write_tokens = 0,
-) => ({ input_tokens, output_tokens, cache_read_tokens, cache_write_tokens });
+) => ({
+  input_tokens,
+  output_tokens,
+  cache_read_tokens,
+  cache_write_tokens,
+  provider_cost: null,
+});
 
 Deno.test("claude-haiku-5-5: base rates up to 100,000 prompt tokens", () => {
   const cost = computeCostUsd(
@@ -128,4 +134,42 @@ Deno.test("per_request_cost_usd is charged once per request on top of token cost
     1e-15,
   );
   assertEquals(MODELS["jev-1.14.0"], MODELS["jev-latest"]);
+});
+
+// ADR 0003 §1: the provider-reported cost is kept raw next to the buckets.
+// cortecs (OpenAI-compatible) sends it as usage.cost; the shape below is a
+// cortecs glm-5.3 response.
+Deno.test("cortecs usage.cost is recorded as provider_cost (non-streaming)", () => {
+  const body = {
+    choices: [{ message: { role: "assistant", content: "Hei" } }],
+    usage: {
+      prompt_tokens: 1200,
+      completion_tokens: 40,
+      total_tokens: 1240,
+      prompt_tokens_details: { cached_tokens: 1000 },
+      cost: 1234,
+      cost_details: { prompt_cost: 1200, cache_read_cost: 34 },
+    },
+  };
+  assertEquals(extractUsageFromJson(body), {
+    ...usage(200, 40, 1000),
+    provider_cost: 1234,
+  });
+});
+
+Deno.test("cortecs usage.cost on the final stream chunk is recorded as provider_cost", () => {
+  const sse = [
+    `data: {"choices":[{"delta":{"content":"Hei"}}]}`,
+    `data: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":40,"total_tokens":1240,"prompt_tokens_details":{"cached_tokens":1000},"cost":0.000321}}`,
+    "data: [DONE]",
+  ].join("\n\n");
+  assertEquals(extractUsageFromSse(sse), {
+    ...usage(200, 40, 1000),
+    provider_cost: 0.000321,
+  });
+});
+
+Deno.test("no usage.cost leaves provider_cost null", () => {
+  const body = { usage: { input_tokens: 10, output_tokens: 2 } };
+  assertEquals(extractUsageFromJson(body), usage(10, 2));
 });

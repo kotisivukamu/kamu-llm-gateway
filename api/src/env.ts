@@ -109,15 +109,6 @@ const schema = z.object({
   LLM_PROXY_URL: z.string().url().default("http://localhost:8301"),
   CONTROL_PLANE_POLL_TOKEN: z.string().min(1),
   USAGE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
-
-  // ADR 0003 §4: when true, ingest adds each new usage row's cost to
-  // llm.key_spend for the key and its root, and sets a key whose spend has
-  // reached budget_usd to status 'over_budget'. Off by default while the
-  // proxy still writes key_spend itself per request (gateway-db.ts
-  // recordSpend): with both on, every budgeted key's spend counts twice. The
-  // release that removes the proxy's write flips this default to true.
-  INGEST_KEY_SPEND: z.enum(["true", "false"]).default("false")
-    .transform((v) => v === "true"),
 });
 
 const parsed = schema.safeParse(Deno.env.toObject());

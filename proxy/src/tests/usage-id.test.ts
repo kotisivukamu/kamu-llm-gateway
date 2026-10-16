@@ -47,10 +47,12 @@ Deno.test("GET /usage?after= pages by usage_id and returns machine_id", async ()
       parent_key_id: null,
       root_key_id: key,
       model: "m",
+      provider_slug: "cortecs",
       input_tokens: i,
       output_tokens: 0,
       cache_read_tokens: 0,
       cache_write_tokens: 0,
+      provider_cost: null,
       cost_usd: null,
     });
   }
@@ -69,4 +71,51 @@ Deno.test("GET /usage?after= pages by usage_id and returns machine_id", async ()
   assertEquals(all[0].machine_id, "local");
   const rest = await get(all[0].usage_id);
   assertEquals(rest.map((r) => r.input_tokens), [1, 2]);
+});
+
+// ADR 0003 §1: the poller prices from the feed, so each row carries the raw
+// buckets, which provider served it, and the provider-reported cost.
+Deno.test("GET /usage feed carries provider_slug, buckets and provider_cost", async () => {
+  const { usage } = await import("../routes/usage.ts");
+  const key = crypto.randomUUID();
+  recordUsage({
+    key_id: key,
+    name: "feed-test",
+    parent_key_id: null,
+    root_key_id: key,
+    model: "glm-5.3",
+    provider_slug: "cortecs",
+    input_tokens: 200,
+    output_tokens: 40,
+    cache_read_tokens: 1000,
+    cache_write_tokens: 7,
+    provider_cost: 1234,
+    cost_usd: null,
+  });
+  const res = await usage.request(`/?after=0&key_id=${key}`, {
+    headers: {
+      authorization: `Bearer ${Deno.env.get("CONTROL_PLANE_POLL_TOKEN")}`,
+    },
+  });
+  const [row] = (await res.json()).rows;
+  assertEquals(
+    {
+      model: row.model,
+      provider_slug: row.provider_slug,
+      input_tokens: row.input_tokens,
+      output_tokens: row.output_tokens,
+      cache_read_tokens: row.cache_read_tokens,
+      cache_write_tokens: row.cache_write_tokens,
+      provider_cost: row.provider_cost,
+    },
+    {
+      model: "glm-5.3",
+      provider_slug: "cortecs",
+      input_tokens: 200,
+      output_tokens: 40,
+      cache_read_tokens: 1000,
+      cache_write_tokens: 7,
+      provider_cost: 1234,
+    },
+  );
 });

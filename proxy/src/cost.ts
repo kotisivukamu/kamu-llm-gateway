@@ -1,30 +1,40 @@
-// Turns an upstream LLM response into an estimated USD cost, using the static
-// per-model prices in catalog.ts (the math is in shared/pricing.ts). Runs off
-// the hot path: proxy.ts tees the response and this code prices the buffered
-// copy in the background.
+// Turns an upstream LLM response into normalised usage: the token buckets the
+// api prices at ingest (ADR 0003) and the provider-reported cost. Runs off the
+// hot path: proxy.ts tees the response and this code reads the buffered copy
+// in the background.
 //
 // Normalisation rule: usage collapses into four buckets —
 //   input_tokens        fresh (uncached) prompt tokens, billed at the input rate
 //   output_tokens       completion tokens, billed at the output rate
 //   cache_read_tokens   prompt tokens served from the provider's cache
 //   cache_write_tokens  prompt tokens written into the provider's cache
-// Cache buckets are priced with the catalog's cache rates (Anthropic: reads at
-// 0.1x input, 5-minute writes at 1.25x input). Folding them into input at the
-// full rate — the pre-2026-08 behaviour — over-counted real builds ~4x,
-// because cache reads dominate agentic traffic.
+// Cache buckets have their own rates (Anthropic: reads at 0.1x input,
+// 5-minute writes at 1.25x input). Folding them into input at the full rate —
+// the pre-2026-08 behaviour — over-counted real builds ~4x, because cache
+// reads dominate agentic traffic.
 
 import type { NormUsage } from "@shared/pricing.ts";
 
 export type { NormUsage };
 
+// What the proxy records per request (ADR 0003 §1): the four token buckets
+// plus the cost the provider itself reported, when it reported one. Only
+// cortecs sends one today (`usage.cost`, OpenAI-compatible shape). Its unit
+// is undocumented (docs.cortecs.ai lists only token counts; cortecs prices in
+// EUR), so the raw number is stored with no currency and is never billed.
+export interface MeteredUsage extends NormUsage {
+  provider_cost: number | null;
+}
+
 // deno-lint-ignore no-explicit-any
 type Json = any;
 
-export const NO_USAGE: NormUsage = {
+export const NO_USAGE: MeteredUsage = {
   input_tokens: 0,
   output_tokens: 0,
   cache_read_tokens: 0,
   cache_write_tokens: 0,
+  provider_cost: null,
 };
 
 function num(v: unknown): number {
@@ -43,6 +53,10 @@ function completionWithHiddenThinking(u: Json): number {
   return completion + unreported;
 }
 
+function providerCost(u: Json): number | null {
+  return typeof u.cost === "number" ? u.cost : null;
+}
+
 // Pulls normalised usage out of a single parsed JSON object, covering both the
 // Anthropic Messages shape (usage.input_tokens excludes the cache_* buckets,
 // which arrive as separate fields; OpenAI's gpt-4o-*-transcribe responses
@@ -51,7 +65,7 @@ function completionWithHiddenThinking(u: Json): number {
 // (usage.prompt_tokens INCLUDES cached tokens; the cached share is reported in
 // prompt_tokens_details.cached_tokens, or prompt_cache_hit_tokens on DeepSeek's
 // native API).
-function usageFromObject(obj: Json): NormUsage | null {
+function usageFromObject(obj: Json): MeteredUsage | null {
   const u = obj?.usage ?? obj?.message?.usage;
   if (!u || typeof u !== "object") return null;
 
@@ -62,6 +76,7 @@ function usageFromObject(obj: Json): NormUsage | null {
       output_tokens: num(u.output_tokens),
       cache_read_tokens: num(u.cache_read_input_tokens),
       cache_write_tokens: num(u.cache_creation_input_tokens),
+      provider_cost: providerCost(u),
     };
   }
 
@@ -77,6 +92,7 @@ function usageFromObject(obj: Json): NormUsage | null {
       output_tokens: completionWithHiddenThinking(u),
       cache_read_tokens: cached,
       cache_write_tokens: 0,
+      provider_cost: providerCost(u),
     };
   }
 
@@ -84,7 +100,7 @@ function usageFromObject(obj: Json): NormUsage | null {
 }
 
 // Non-streaming JSON response body (already parsed).
-export function extractUsageFromJson(body: unknown): NormUsage | null {
+export function extractUsageFromJson(body: unknown): MeteredUsage | null {
   return usageFromObject(body);
 }
 
@@ -99,11 +115,12 @@ export function extractUsageFromJson(body: unknown): NormUsage | null {
 // We take input/cache from whichever event supplies them and keep the largest
 // output value seen (Anthropic's output_tokens is cumulative across
 // message_delta).
-export function extractUsageFromSse(text: string): NormUsage | null {
+export function extractUsageFromSse(text: string): MeteredUsage | null {
   let input = 0;
   let output = 0;
   let cacheRead = 0;
   let cacheWrite = 0;
+  let cost: number | null = null;
   let seen = false;
 
   for (const rawLine of text.split(/\r?\n/)) {
@@ -151,6 +168,8 @@ export function extractUsageFromSse(text: string): NormUsage | null {
       if (completion > output) output = completion;
       seen = true;
     }
+    // cortecs puts it on the final usage chunk, next to the token counts.
+    cost = providerCost(u) ?? cost;
   }
 
   return seen
@@ -159,10 +178,12 @@ export function extractUsageFromSse(text: string): NormUsage | null {
       output_tokens: output,
       cache_read_tokens: cacheRead,
       cache_write_tokens: cacheWrite,
+      provider_cost: cost,
     }
     : null;
 }
 
-// The cost math itself lives in shared/ so the api poller can price at
-// ingest with the same rules (ADR 0003).
+// The cost math lives in shared/ and the api prices at ingest (ADR 0003).
+// The proxy uses it only for the catalog estimate it still shows key holders
+// on GET /usage (see db.ts UsageRecord.cost_usd); nothing bills from that.
 export { computeCostUsd } from "@shared/pricing.ts";

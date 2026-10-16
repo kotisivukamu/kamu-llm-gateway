@@ -1,6 +1,12 @@
 import { importJWK, jwtVerify } from "jose";
 import { env } from "./env.ts";
-import { DENY, type KeyMeta, lookupByHash, lookupById } from "./keymeta.ts";
+import {
+  type CachedKeyMeta,
+  DENY,
+  type KeyMeta,
+  lookupByHash,
+  lookupById,
+} from "./keymeta.ts";
 
 // Credential verification for the two DB-backed shapes (ADR 0001 §3 / §10.6).
 // The legacy shared SESSION_JWT_SECRET is gone — this is the new authority.
@@ -14,7 +20,7 @@ import { DENY, type KeyMeta, lookupByHash, lookupById } from "./keymeta.ts";
 // (OpenAI SDK). Either header works — same as the legacy proxy.
 
 // The verified credential the hot path carries forward. Same semantics as the
-// legacy LlmToken (jti, name, models, budget_usd) plus the lineage + key_type
+// legacy LlmToken (jti, name, models) plus the lineage + key_type
 // the new model needs for metering and roll-up (ADR 0001 §7.6/§8).
 export interface KeyCredential {
   // The gateway row PK. Spend and usage_log are keyed by this (ADR 0001 §8).
@@ -27,9 +33,10 @@ export interface KeyCredential {
   // fail-closed. For sub-keys this is the (subset) set signed into the JWT,
   // but the row is the authority — we read it from the row.
   models: string[];
-  // Optional hard spend cap in USD. null = uncapped (skip the pre-check,
-  // same as the legacy proxy). For sub-keys this comes from the row.
-  budget_usd: number | null;
+  // The key, or the root it derives from, has reached its budget (ADR 0003
+  // §4: the api sets status 'over_budget' at ingest). LLM calls get 402;
+  // reading its own usage is still allowed.
+  over_budget: boolean;
   // 'top' = top-level opaque key; 'derived' = Ed25519-signed sub-key JWT.
   key_type: "top" | "derived";
   // Lineage (ADR 0001 §7.6). For a top-level key, parent_key_id = null and
@@ -114,33 +121,51 @@ function looksLikeJwt(presented: string): boolean {
   return parts.every((p) => p.length > 0 && /^[A-Za-z0-9_-]+$/.test(p));
 }
 
-// Resolve a raw key-meta row into a verified credential, applying the active +
-// expiry checks that are the same for both credential shapes (ADR 0001 §10.6
-// step 3: a row with status='revoked' denies; an expired row denies). Returns
-// null if the row must deny (so the cache can store DENY for it).
-function rowToCredential(row: KeyMeta): KeyCredential | null {
-  if (row.status !== "active") return null;
-  if (row.expires_at) {
-    const exp = new Date(row.expires_at).getTime();
-    if (!Number.isFinite(exp) || exp <= Date.now()) return null;
+// A cached row the request may use: not DENY, and not expired. The cache
+// turned revoked, expired and missing rows into DENY when it stored them;
+// expiry is checked again because a cached row can expire within the TTL.
+function usable(cached: CachedKeyMeta): cached is KeyMeta {
+  if (!cached || cached === DENY) return false;
+  if (!cached.expires_at) return true;
+  const exp = new Date(cached.expires_at).getTime();
+  return Number.isFinite(exp) && exp > Date.now();
+}
+
+// Resolve a cached key-meta row into a verified credential (ADR 0001 §10.6
+// step 3). A usable row is 'active' or 'over_budget'. A derived key also
+// needs its root: an over-budget root stops the whole subtree (402), and a
+// root that is revoked or gone denies (401). Ingest flips only the key it
+// charged and that key's root, never the root's other children, so this check
+// is what makes a root's budget cover them. The root row comes from the same
+// cache, so this adds no DB read on a hit.
+async function toCredential(
+  cached: CachedKeyMeta,
+): Promise<KeyCredential | null> {
+  if (!usable(cached)) return null;
+  let overBudget = cached.status === "over_budget";
+  if (cached.root_key_id && cached.root_key_id !== cached.key_id) {
+    const root = await lookupById(cached.root_key_id);
+    if (!usable(root)) return null;
+    overBudget ||= root.status === "over_budget";
   }
   return {
-    key_id: row.key_id,
-    jti: row.key_id,
-    name: row.label,
-    models: row.models,
-    budget_usd: row.budget_usd,
-    key_type: row.key_type,
-    parent_key_id: row.parent_key_id,
-    root_key_id: row.root_key_id,
+    key_id: cached.key_id,
+    jti: cached.key_id,
+    name: cached.label,
+    models: cached.models,
+    over_budget: overBudget,
+    key_type: cached.key_type,
+    parent_key_id: cached.parent_key_id,
+    root_key_id: cached.root_key_id,
   };
 }
 
 // The hot-path entry point. ADR 0001 §10.6:
 //   1. detect format
 //   2. verify (lookup by hash / verify Ed25519 signature + extract jti)
-//   3. lookup the row (from cache, or DB on miss) and deny if revoked
-//   4. (budget pre-check happens in proxy.ts, against getSpentUsd(key_id))
+//   3. lookup the row (from cache, or DB on miss) and deny if revoked; for a
+//      derived key, the root's row too
+//   4. budget: over_budget on the credential, proxy.ts answers 402 (ADR 0003)
 //
 // The cache (keymeta.ts) holds the row metadata; on a MISS it does the DB
 // lookup. This keeps the hot path ~0ms on hits. The cache is the ONLY place
@@ -154,10 +179,7 @@ export async function verifyCredential(
   // --- Top-level opaque key ------------------------------------------------
   if (presented.startsWith(TOP_PREFIX)) {
     const hash = await hashKey(presented);
-    const cached = await lookupByHash(hash);
-    if (cached === DENY) return null;
-    if (cached) return rowToCredential(cached);
-    return null;
+    return toCredential(await lookupByHash(hash));
   }
 
   // --- Derived sub-key JWT --------------------------------------------------
@@ -180,10 +202,7 @@ export async function verifyCredential(
     if (!jti) return null;
 
     // The row is the authority on lifecycle/lineage/budget (ADR 0001 §3).
-    const cached = await lookupById(jti);
-    if (cached === DENY) return null;
-    if (cached) return rowToCredential(cached);
-    return null;
+    return toCredential(await lookupById(jti));
   }
 
   // Neither shape — fail: 401.

@@ -16,8 +16,8 @@ export type { KeyMeta } from "./gateway-db.ts";
 //
 // Two keyed maps mirror the two lookup paths:
 //   - byHash: top-level opaque keys, keyed by sha256(secret) hex.
-//   - byId:   derived sub-keys (and any id-based lookup), keyed by the row PK
-//             (= the JWT jti).
+//   - byId:   derived sub-keys and their roots, keyed by the row PK (= the
+//             JWT jti, or a derived key's root_key_id).
 //
 // Entries expire (TTL = KEY_META_CACHE_TTL_SEC). A naive size bound is not
 // needed at projected traffic (ADR 0001 §10.9: distinct keys alive is small
@@ -31,7 +31,9 @@ export interface CacheEntry {
 
 // ADR 0001 §10.6 step 3 `revokedSet` is folded into this same cached row: a
 // row with status='revoked' (or an expired row, or a missing row) is cached as
-// DENY. The hot path treats DENY as "deny" without re-reading the DB.
+// DENY. The hot path treats DENY as "deny" without re-reading the DB. An
+// 'over_budget' row (ADR 0003 §4) is cached as the row: it is still denied for
+// LLM calls, but with 402 rather than 401, and may still read its own usage.
 export const DENY: unique symbol = Symbol("deny");
 export type CachedKeyMeta = KeyMeta | typeof DENY | null;
 
@@ -48,11 +50,11 @@ function fresh(entry: CacheEntry | undefined): CachedKeyMeta | undefined {
   return entry.meta;
 }
 
-// Resolve a row into its cached form: DENY if it must deny (not active /
-// expired / missing), else the row metadata.
+// Resolve a row into its cached form: DENY if it must deny outright (revoked
+// / expired / missing), else the row metadata (active or over_budget).
 function toCached(row: KeyMeta | null): CachedKeyMeta {
   if (!row) return DENY;
-  if (row.status !== "active") return DENY;
+  if (row.status !== "active" && row.status !== "over_budget") return DENY;
   if (row.expires_at) {
     const exp = new Date(row.expires_at).getTime();
     if (!Number.isFinite(exp) || exp <= Date.now()) return DENY;
@@ -80,7 +82,7 @@ export async function lookupByHash(
   return cached;
 }
 
-// Derived sub-key: lookup by row PK (= the JWT jti).
+// By row PK: a derived sub-key (= the JWT jti) or a derived key's root.
 export async function lookupById(
   keyId: string,
 ): Promise<CachedKeyMeta> {

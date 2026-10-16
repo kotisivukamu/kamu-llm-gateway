@@ -2,14 +2,16 @@ import "./support/env.ts";
 import { assertAlmostEquals, assertEquals } from "@std/assert";
 import { Hono } from "@hono/hono";
 import postgres from "postgres";
-import { gateway, getSpentUsd } from "../gateway-db.ts";
+import { importJWK, SignJWT } from "jose";
+import { gateway } from "../gateway-db.ts";
 import { stmt } from "../db.ts";
 import { MAX_MULTIPART_BYTES, proxy } from "../routes/proxy.ts";
 
 // The real /llm proxy route (multipart transcription, provider path
 // handling) with the upstream replaced by a fetch stub. Keys are real llm.keys rows (the
 // same verification path as production); usage lands in the in-memory SQLite
-// ledger and, for budgeted keys, the Postgres spend ledger.
+// ledger only. The proxy writes no spend: the api charges it at ingest and
+// sets keys 'over_budget', which the proxy answers with 402 (ADR 0003 §4).
 
 const opts = { sanitizeOps: false, sanitizeResources: false };
 
@@ -34,7 +36,8 @@ async function sha256Hex(s: string): Promise<string> {
 
 async function seedKey(
   models: string[],
-): Promise<{ id: string; secret: string }> {
+  status = "active",
+): Promise<{ id: string; secret: string; teamId: string }> {
   const org = `org_stt_${crypto.randomUUID()}`;
   const [team] = await admin<{ id: string }[]>`
     INSERT INTO llm.teams (kamuid_org_id, name, slug)
@@ -46,11 +49,64 @@ async function seedKey(
     INSERT INTO llm.keys
       (team_id, label, key_hash, prefix, key_type, models, budget_usd, status)
     VALUES (${team.id}, 'stt', ${await sha256Hex(secret)}, 'sk_live_test',
-            'top', ${models}, 10, 'active')
+            'top', ${models}, 10, ${status})
     RETURNING id
   `;
   await admin`UPDATE llm.keys SET root_key_id = id WHERE id = ${key.id}`;
-  return { id: key.id, secret };
+  return { id: key.id, secret, teamId: team.id };
+}
+
+// Throwaway Ed25519 test key pair: the private half matches the test
+// ED25519_PUBLIC_KEY in support/env.ts (same pair as usage.scope.test.ts).
+const TEST_PRIVATE_KEY = "9eoI/HkwmmgkmKzs9yu8drtLyeglFbz5FIulBSRHXrk=";
+const b64url = (b64: string) =>
+  b64.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+
+// A derived key row under `root`, and its signed JWT.
+async function seedChild(
+  root: { id: string; teamId: string },
+  status = "active",
+): Promise<{ id: string; jwt: string }> {
+  const [key] = await admin<{ id: string }[]>`
+    INSERT INTO llm.keys
+      (team_id, label, key_type, models, status, parent_key_id, root_key_id,
+       expires_at)
+    VALUES (${root.teamId}, 'child', 'derived', '{"*"}', ${status}, ${root.id},
+            ${root.id}, now() + interval '1 hour')
+    RETURNING id
+  `;
+  const signer = await importJWK({
+    kty: "OKP",
+    crv: "Ed25519",
+    d: b64url(TEST_PRIVATE_KEY),
+    x: b64url(Deno.env.get("ED25519_PUBLIC_KEY")!),
+  }, "EdDSA");
+  const jwt = await new SignJWT({ jti: key.id, sub: "root" })
+    .setProtectedHeader({ alg: "EdDSA", kid: "test-ed25519-1" })
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(Date.now() / 1000) + 3600)
+    .sign(signer);
+  return { id: key.id, jwt };
+}
+
+const GEMINI_REPLY = {
+  choices: [{ message: { role: "assistant", content: "Hei" } }],
+  usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 40 },
+};
+
+async function chat(credential: string) {
+  Deno.env.set("GEMINI_API_KEY", "gemini-test-upstream");
+  return await app.request("/llm/google/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${credential}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gemini-3.1-flash-lite",
+      messages: [{ role: "user", content: "Moi" }],
+    }),
+  });
 }
 
 interface Captured {
@@ -138,7 +194,8 @@ async function usageRows(keyId: string, want: number) {
 }
 
 Deno.test({
-  name: "transcription: model from the form is authorized and usage is priced",
+  name:
+    "transcription: model from the form is authorized and usage is metered, no spend written",
   fn: async () => {
     const key = await seedKey(["gpt-4o-mini-transcribe"]);
     const sent = form("gpt-4o-mini-transcribe");
@@ -189,7 +246,10 @@ Deno.test({
     // 1000 x $1.25/M + 200 x $5/M
     const want = (1000 * 1.25 + 200 * 5) / 1_000_000;
     assertAlmostEquals(row.cost_usd!, want, 1e-12);
-    assertAlmostEquals(await getSpentUsd(key.id), want, 1e-9);
+    // The budgeted key's spend is the api's to charge at ingest.
+    const spend = await admin`
+      SELECT 1 FROM llm.key_spend WHERE key_id = ${key.id}`;
+    assertEquals(spend.length, 0);
   },
   ...opts,
 });
@@ -283,6 +343,10 @@ Deno.test({
     });
     const [row] = await usageRows(key.id, 1);
     assertEquals(row.output_tokens, 30);
+    assertEquals(
+      stmt(`SELECT provider_slug FROM usage_log WHERE key_id = ?`).get(key.id),
+      { provider_slug: "google" },
+    );
     assertAlmostEquals(row.cost_usd!, (10 * 0.25 + 30 * 1.5) / 1e6, 1e-12);
   },
   ...opts,
@@ -364,6 +428,92 @@ Deno.test({
       });
       assertEquals(res.status, 403);
       assertEquals((await res.json()).error, "path_not_allowed");
+      assertEquals(calls.length, 0);
+    });
+  },
+  ...opts,
+});
+
+// --- Budgets (ADR 0003 §4) --------------------------------------------------
+
+Deno.test({
+  name: "budget: an over_budget key gets 402 budget_exceeded before upstream",
+  fn: async () => {
+    const key = await seedKey(["*"], "over_budget");
+    await withUpstream(GEMINI_REPLY, async (calls) => {
+      const res = await chat(key.secret);
+      assertEquals(res.status, 402);
+      assertEquals(await res.json(), { error: "budget_exceeded" });
+      assertEquals(calls.length, 0);
+    });
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "budget: a revoked key still gets 401",
+  fn: async () => {
+    const key = await seedKey(["*"], "revoked");
+    await withUpstream(GEMINI_REPLY, async (calls) => {
+      const res = await chat(key.secret);
+      assertEquals(res.status, 401);
+      assertEquals(calls.length, 0);
+    });
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "budget: a derived key under an active root goes through",
+  fn: async () => {
+    const root = await seedKey(["*"]);
+    const child = await seedChild(root);
+    await withUpstream(GEMINI_REPLY, async (calls) => {
+      const res = await chat(child.jwt);
+      assertEquals(res.status, 200);
+      assertEquals(calls.length, 1);
+    });
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "budget: an active derived key whose root is over_budget gets 402",
+  fn: async () => {
+    const root = await seedKey(["*"], "over_budget");
+    const child = await seedChild(root);
+    await withUpstream(GEMINI_REPLY, async (calls) => {
+      const res = await chat(child.jwt);
+      assertEquals(res.status, 402);
+      assertEquals(await res.json(), { error: "budget_exceeded" });
+      assertEquals(calls.length, 0);
+    });
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "budget: an active derived key whose root is revoked gets 401",
+  fn: async () => {
+    const root = await seedKey(["*"], "revoked");
+    const child = await seedChild(root);
+    await withUpstream(GEMINI_REPLY, async (calls) => {
+      const res = await chat(child.jwt);
+      assertEquals(res.status, 401);
+      assertEquals(calls.length, 0);
+    });
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "budget: an over_budget derived key under an active root gets 402",
+  fn: async () => {
+    const root = await seedKey(["*"]);
+    const child = await seedChild(root, "over_budget");
+    await withUpstream(GEMINI_REPLY, async (calls) => {
+      const res = await chat(child.jwt);
+      assertEquals(res.status, 402);
       assertEquals(calls.length, 0);
     });
   },

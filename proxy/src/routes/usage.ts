@@ -49,11 +49,17 @@
 //           "parent_key_id": string | null,  // lineage (ADR 0001 §7.6)
 //           "root_key_id": string | null,
 //           "model": string,
-//           "input_tokens": number,
+//           "provider_slug": string | null, // upstream that served it (null
+//                                    //  on rows from before 0006)
+//           "input_tokens": number,  // uncached prompt tokens
 //           "output_tokens": number,
 //           "cache_read_tokens": number,
 //           "cache_write_tokens": number,
-//           "cost_usd": number | null,
+//           "provider_cost": number | null, // provider-reported, raw (cortecs
+//                                    //  usage.cost; unit undocumented, so
+//                                    //  no provider_cost_currency is sent)
+//           "cost_usd": number | null, // catalog estimate for key holders;
+//                                    //  the api re-prices and bills (ADR 0003)
 //           "created_at": string     // ISO 8601 UTC
 //         }
 //       ],
@@ -115,10 +121,12 @@ interface UsageRow {
   parent_key_id: string | null;
   root_key_id: string | null;
   model: string;
+  provider_slug: string | null;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  provider_cost: number | null;
   cost_usd: number | null;
   created_at: string;
 }
@@ -187,8 +195,9 @@ function select(
 ): UsageRow[] {
   const rows = stmt(
     `SELECT id, usage_id, machine_id, key_id, jti, name, parent_key_id, root_key_id, model,
-              input_tokens, output_tokens,
+              provider_slug, input_tokens, output_tokens,
               cache_read_tokens, cache_write_tokens,
+              provider_cost,
               cost_usd, created_at
          FROM usage_log
         WHERE ${conditions.join(" AND ")}

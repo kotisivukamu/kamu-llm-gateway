@@ -109,10 +109,12 @@ function use(
     parent_key_id,
     root_key_id,
     model: "glm-5.3",
+    provider_slug: "cortecs",
     input_tokens: 100,
     output_tokens: 10,
     cache_read_tokens: 5,
     cache_write_tokens: 1,
+    provider_cost: null,
     cost_usd,
   });
 }

@@ -2,7 +2,6 @@ import "./support/env.ts";
 import { assertAlmostEquals, assertEquals, assertRejects } from "@std/assert";
 import { computeCostUsd } from "@shared/pricing.ts";
 import { MODELS } from "../../../proxy/src/catalog.ts";
-import { env } from "../env.ts";
 import { clearPriceCache } from "../lib/pricing.ts";
 import { pollAll, pollOnce } from "../lib/usage-poller.ts";
 import { adminSql, resetDb, seedKey, seedTeam } from "./support/db.ts";
@@ -64,6 +63,7 @@ function usageRow(
     parent_key_id: null,
     root_key_id: key,
     model: "glm-5.3",
+    provider_slug: "cortecs",
     input_tokens: 1,
     output_tokens: 1,
     cache_read_tokens: 0,
@@ -344,32 +344,27 @@ Deno.test(
     await resetDb();
     const team = await seedTeam();
     const keyId = await seedKey({ teamId: team.id });
-    const withCost = usageRow(keyId, {
+    // What the proxy sends today: cortecs' raw usage.cost, no currency.
+    const cortecs = usageRow(keyId, { provider_cost: 1234 });
+    const withCurrency = usageRow(keyId, {
       provider_cost: 0.00042,
       provider_cost_currency: "EUR",
     });
-    const without = usageRow(keyId);
-    await poll([withCost, without]);
-    const a = await stored(withCost.usage_id);
-    assertEquals(Number(a.provider_cost), 0.00042);
-    assertEquals(a.provider_cost_currency, "EUR");
+    const without = usageRow(keyId, { provider_cost: null });
+    await poll([cortecs, withCurrency, without]);
+    const a = await stored(cortecs.usage_id);
+    assertEquals(Number(a.provider_cost), 1234);
+    assertEquals(a.provider_cost_currency, null);
+    const c = await stored(withCurrency.usage_id);
+    assertEquals(Number(c.provider_cost), 0.00042);
+    assertEquals(c.provider_cost_currency, "EUR");
     const b = await stored(without.usage_id);
     assertEquals(b.provider_cost, null);
     assertEquals(b.provider_cost_currency, null);
   },
 );
 
-// --- Budgets at ingest (ADR 0003 §4), behind INGEST_KEY_SPEND --------------
-
-async function withSpendFlag(on: boolean, fn: () => Promise<void>) {
-  const before = env.INGEST_KEY_SPEND;
-  env.INGEST_KEY_SPEND = on;
-  try {
-    await fn();
-  } finally {
-    env.INGEST_KEY_SPEND = before;
-  }
-}
+// --- Budgets at ingest (ADR 0003 §4) ---------------------------------------
 
 // One row costing exactly 1 USD at the test price.
 function dollarRow(keyId: string, rootKeyId: string, parentKeyId?: string) {
@@ -380,22 +375,6 @@ function dollarRow(keyId: string, rootKeyId: string, parentKeyId?: string) {
     output_tokens: 0,
   });
 }
-
-Deno.test(
-  "ingest: INGEST_KEY_SPEND off leaves key_spend alone",
-  T,
-  async () => {
-    await resetDb();
-    await addPrice("2026-01-01T00:00:00Z", 1);
-    const team = await seedTeam();
-    const keyId = await seedKey({ teamId: team.id, budgetUsd: 0.5 });
-    await withSpendFlag(false, async () => {
-      await poll([dollarRow(keyId, keyId)]);
-    });
-    assertEquals(await spentUsd(keyId), null);
-    assertEquals(await keyStatus(keyId), "active");
-  },
-);
 
 Deno.test(
   "ingest: spend goes to the key and its root, once each, never twice on re-poll",
@@ -412,10 +391,8 @@ Deno.test(
       rootKeyId: root,
     });
     const rows = [dollarRow(child, root, root), dollarRow(root, root)];
-    await withSpendFlag(true, async () => {
-      assertEquals(await poll(rows), 2);
-      assertEquals(await poll(rows), 0); // the overlap re-read
-    });
+    assertEquals(await poll(rows), 2);
+    assertEquals(await poll(rows), 0); // the overlap re-read
     assertEquals(await spentUsd(child), 1);
     assertEquals(await spentUsd(root), 2); // child's row + its own, not 3
     const [{ request_count }] = await adminSql<{ request_count: number }[]>`
@@ -429,9 +406,7 @@ Deno.test("ingest: unpriced rows charge nothing", T, async () => {
   await resetDb();
   const team = await seedTeam();
   const keyId = await seedKey({ teamId: team.id, budgetUsd: 1 });
-  await withSpendFlag(true, async () => {
-    await poll([usageRow(keyId, { model: "no-such-model" })]);
-  });
+  await poll([usageRow(keyId, { model: "no-such-model" })]);
   assertEquals(await spentUsd(keyId), null);
 });
 
@@ -456,11 +431,9 @@ Deno.test(
       parentKeyId: root,
       rootKeyId: root,
     });
-    await withSpendFlag(true, async () => {
-      await poll([dollarRow(sibling, root, root)]);
-      assertEquals(await keyStatus(root), "active"); // 1 of 2
-      await poll([dollarRow(child, root, root)]);
-    });
+    await poll([dollarRow(sibling, root, root)]);
+    assertEquals(await keyStatus(root), "active"); // 1 of 2
+    await poll([dollarRow(child, root, root)]);
     assertEquals(await keyStatus(child), "over_budget"); // 1 >= 1
     assertEquals(await keyStatus(root), "over_budget"); // 2 >= 2
     assertEquals(await keyStatus(sibling), "active"); // no budget of its own
@@ -479,9 +452,7 @@ Deno.test(
       budgetUsd: 0.5,
       status: "revoked",
     });
-    await withSpendFlag(true, async () => {
-      await poll([dollarRow(keyId, keyId)]);
-    });
+    await poll([dollarRow(keyId, keyId)]);
     assertEquals(await spentUsd(keyId), 1);
     assertEquals(await keyStatus(keyId), "revoked");
   },

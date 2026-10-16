@@ -17,7 +17,6 @@ import {
   NO_USAGE,
 } from "../cost.ts";
 import { recordUsage } from "../db.ts";
-import { getSpentUsd, recordSpend } from "../gateway-db.ts";
 
 function safeJsonParse(text: string): unknown {
   try {
@@ -114,30 +113,12 @@ proxy.all("/:provider_slug/*", async (c) => {
   const token = await verifyCredential(presented);
   if (!token) return c.json({ error: "unauthorized" }, 401);
 
-  // Opt-in spend cap. Only keys minted with a budget are enforced; uncapped
-  // keys skip this pre-check (their usage is still recorded by the
-  // background tee below). Pre-check bounds the blast radius to at most the
-  // budget plus one in-flight request's cost (we only learn a request's cost
-  // after it completes). Keyed by key_id (ADR 0001 §8); null budget = uncapped.
-  // The running total is in Postgres so every proxy machine sees the same
-  // number. If Postgres is unreachable the request fails rather than running
-  // a budgeted key unchecked.
-  const budgeted = typeof token.budget_usd === "number";
-  if (budgeted) {
-    const spent = await getSpentUsd(token.key_id);
-    if (spent >= token.budget_usd!) {
-      return c.json(
-        {
-          error: "budget_exhausted",
-          message:
-            `Key "${token.name}" has spent $${spent.toFixed(4)} of its ` +
-            `$${token.budget_usd!.toFixed(2)} budget and is blocked. ` +
-            `Mint a new key to continue.`,
-        },
-        402,
-      );
-    }
-  }
+  // Budgets are enforced by status (ADR 0003 §4): the api charges spend when
+  // it ingests usage and flips a key that reached its budget, or whose root
+  // did, to 'over_budget'. The proxy reads that through the key-meta cache,
+  // so there is no per-request spend read and a key can overrun by what lands
+  // within the poll interval + cache TTL. Budgets are runaway protection.
+  if (token.over_budget) return c.json({ error: "budget_exceeded" }, 402);
 
   const url = new URL(c.req.url);
   const upstreamPath = url.pathname.replace(
@@ -335,9 +316,8 @@ proxy.all("/:provider_slug/*", async (c) => {
   );
 
   // Error / bodyless responses carry no billable usage — pass straight
-  // through. Everything else (budgeted or not) is teed so the usage log gets a
-  // row for every request; the spend ledger is additionally updated for
-  // budgeted keys.
+  // through. Everything else is teed so the usage log gets a row for every
+  // request; the api prices it and charges the key at ingest.
   const model = modelInBody ? getModel(modelInBody) : null;
   if (!upstream.body || upstream.status >= 400) {
     return new Response(upstream.body, {
@@ -367,40 +347,29 @@ proxy.all("/:provider_slug/*", async (c) => {
       if (!reported && !perRequest) return;
       const usage = reported ?? NO_USAGE;
 
-      // Cost is null when the model has no catalog price — token counts are
-      // still recorded so the gap is visible and re-priceable later.
-      const cost = model ? computeCostUsd(model, usage) : null;
+      // cost_usd is the catalog estimate key holders read on GET /usage
+      // until they move to the api's usage endpoint (ADR 0003 §5). Nothing
+      // bills from it: the api prices the buckets itself at ingest.
       recordUsage({
         key_id: token.key_id,
         name: token.name,
         parent_key_id: token.parent_key_id,
         root_key_id: token.root_key_id,
         model: modelInBody ?? "-",
+        provider_slug,
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         cache_read_tokens: usage.cache_read_tokens,
         cache_write_tokens: usage.cache_write_tokens,
-        cost_usd: cost,
+        provider_cost: usage.provider_cost,
+        cost_usd: model ? computeCostUsd(model, usage) : null,
       });
-
-      if (cost === null) {
-        // Surfaced so an operator can add the missing catalog entry.
-        console.warn(
-          `[proxy] key="${token.name}" model=${
-            modelInBody ?? "-"
-          } has no catalog price; usage recorded without cost`,
-        );
-        return;
-      }
-
-      if (budgeted) {
-        await recordSpend(token.key_id, cost);
-      }
       console.log(
-        `[proxy] metered key="${token.name}" model=${modelInBody} ` +
+        `[proxy] metered key="${token.name}" model=${modelInBody ?? "-"} ` +
           `in=${usage.input_tokens} out=${usage.output_tokens} ` +
           `cacheRead=${usage.cache_read_tokens} ` +
-          `cacheWrite=${usage.cache_write_tokens} cost=$${cost.toFixed(6)}`,
+          `cacheWrite=${usage.cache_write_tokens} ` +
+          `providerCost=${usage.provider_cost ?? "-"}`,
       );
     } catch (e) {
       // Metering must never take down a request that already succeeded upstream.

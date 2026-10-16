@@ -81,10 +81,12 @@ function use(keyId: string, inputTokens: number, cost: number) {
     parent_key_id: top.id,
     root_key_id: top.id,
     model: "glm-5.3",
+    provider_slug: "cortecs",
     input_tokens: inputTokens,
     output_tokens: 1,
     cache_read_tokens: 0,
     cache_write_tokens: 0,
+    provider_cost: null,
     cost_usd: cost,
   });
 }
@@ -108,10 +110,12 @@ function siblingRow(keyId: string, usageId: string, inputTokens: number) {
     parent_key_id: top.id,
     root_key_id: top.id,
     model: "glm-5.3",
+    provider_slug: "cortecs",
     input_tokens: inputTokens,
     output_tokens: 1,
     cache_read_tokens: 0,
     cache_write_tokens: 0,
+    provider_cost: null,
     cost_usd: 0.5,
     created_at: new Date().toISOString(),
   };

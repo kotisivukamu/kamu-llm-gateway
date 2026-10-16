@@ -19,12 +19,13 @@
 // skipped. Any other URL (local dev, tests) is polled as the single proxy.
 //
 // Every inserted row is priced here, once (ADR 0003 §2): see lib/pricing.ts
-// for which price applies. The proxy feed still carries its own cost_usd
-// until it stops pricing; that value is ignored. With INGEST_KEY_SPEND on,
-// the same transaction adds the new rows' cost to llm.key_spend for each
-// row's key and root and flips keys that reached their budget to
-// 'over_budget' (§4). Only rows this poll actually inserted count, so a
-// re-poll of the overlap never charges a row twice.
+// for which price applies. The feed's own cost_usd (the proxy's catalog
+// estimate for key holders) is ignored. The same transaction adds the new
+// rows' cost to llm.key_spend for each row's key and root and flips keys that
+// reached their budget to 'over_budget' (§4); this is the only place spend is
+// charged (the proxy stopped writing it), and the proxy denies over_budget
+// keys with 402. Only rows this poll actually inserted count, so a re-poll of
+// the overlap never charges a row twice.
 //
 // Adapted from the legacy graphile-worker task
 // (kotisivukamu/worker/src/llm_usage/poll.ts). This repo has no job queue, so
@@ -41,9 +42,11 @@ const OVERLAP_MS = 10_000;
 
 // Mirrors the proxy's GET /usage response contract (proxy/src/routes/usage.ts).
 // Duplicated on purpose: the wire shape is the contract, not a shared type.
-// Keep in sync with the proxy if the shape changes. The feed's cost_usd is
-// not read (the api prices); provider_cost/provider_cost_currency are absent
-// until the proxy starts recording them.
+// Keep in sync with the proxy if the shape changes. Only the fields the
+// poller reads are listed: not the feed's cost_usd (the api prices), and not
+// provider_slug (llm.usage_log has no column for it; the model names the
+// route). provider_cost is the provider's raw figure (cortecs usage.cost);
+// the proxy sends no provider_cost_currency yet, so it is stored as null.
 interface UsageRow {
   usage_id: string;
   machine_id: string;
@@ -195,7 +198,7 @@ export async function pollOnce(
         ON CONFLICT (usage_id) DO NOTHING
         RETURNING usage_id::text
       `;
-      if (env.INGEST_KEY_SPEND && ins.length > 0) {
+      if (ins.length > 0) {
         await chargeSpend(tx, ins.map((r) => r.usage_id));
       }
       return ins.length;
@@ -216,8 +219,7 @@ export async function pollOnce(
 // top-level key's own rows), then sets every charged key that is now at or
 // past its budget to 'over_budget'. Summed from the stored cost_usd so the
 // ledger matches usage_log to the cent. Unpriced and zero-cost rows are not
-// counted, which keeps request_count meaning "billed requests" as the proxy's
-// recordSpend does.
+// counted, which keeps request_count meaning "billed requests".
 async function chargeSpend(
   tx: postgres.TransactionSql,
   usageIds: string[],
