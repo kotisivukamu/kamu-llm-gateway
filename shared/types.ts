@@ -9,12 +9,6 @@
 export type KeyStatus = "active" | "revoked" | "over_budget";
 export type KeyType = "top" | "derived";
 
-// What a top-level key may do on the gateway's own api besides calling models.
-// Derived keys never carry scopes (keys_scopes_top_only).
-//   prices:write: read and append llm.model_prices via /internal/prices (the
-//                 kamuhub billing worker's daily price sync).
-export type KeyScope = "prices:write";
-
 export type Role = "owner" | "admin" | "member";
 
 // The owning-org projection of a KamuID org, keyed on the shared, non-divergent
@@ -52,8 +46,6 @@ export interface Key {
   //   budget_usd: soft spend cap (ADR §10 — overdraft is accepted and bounded).
   models: string[];
   budget_usd: number | null;
-  // Capabilities on the gateway api, top-level keys only (see KeyScope).
-  scopes: KeyScope[];
   // Lifecycle, like a site's published/archived state.
   status: KeyStatus;
   revoked_at: string | null;

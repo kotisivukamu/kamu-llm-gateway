@@ -71,7 +71,6 @@ export interface SeedKeyOpts {
   rootKeyId?: string | null;
   expiresAt?: string | null;
   createdBy?: string | null;
-  scopes?: string[];
 }
 
 /** Insert a `llm.keys` row directly (bypassing the API), for test fixtures. */
@@ -79,15 +78,14 @@ export async function seedKey(opts: SeedKeyOpts): Promise<string> {
   const [row] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
       (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-       status, parent_key_id, root_key_id, expires_at, created_by, scopes)
+       status, parent_key_id, root_key_id, expires_at, created_by)
     VALUES
       (${opts.teamId}, ${opts.label ?? "seed key"}, ${opts.keyHash ?? null},
        ${opts.prefix ?? null}, ${opts.keyType ?? "top"},
        ${opts.models ?? ["*"]}, ${opts.budgetUsd ?? null},
        ${opts.status ?? "active"},
        ${opts.parentKeyId ?? null}, ${opts.rootKeyId ?? null},
-       ${opts.expiresAt ?? null}, ${opts.createdBy ?? null},
-       ${opts.scopes ?? []})
+       ${opts.expiresAt ?? null}, ${opts.createdBy ?? null})
     RETURNING id
   `;
   if (opts.rootKeyId == null) {

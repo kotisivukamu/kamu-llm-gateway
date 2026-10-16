@@ -1,7 +1,6 @@
 import { jwtVerify, SignJWT } from "jose";
 import { adminSql } from "../config/db.ts";
 import { getSigningKey, getVerifyKey, signingKeyId } from "./ed25519.ts";
-import type { KeyScope } from "@shared/types.ts";
 
 // Key material helpers for the two credential shapes (ADR 0001 §3).
 //
@@ -99,17 +98,10 @@ export function extractCredential(headers: Headers): string {
     (headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
 }
 
-/**
- * A verified gateway credential: whose usage it may read, and what else the
- * key may do (scopes, only on an active top-level key; see
- * routes/internal.ts).
- */
+/** Whose usage a verified gateway credential may read. */
 export interface UsageScope {
   key_id: string;
   key_type: "top" | "derived";
-  label: string;
-  status: "active" | "over_budget";
-  scopes: KeyScope[];
 }
 
 /**
@@ -141,7 +133,7 @@ export async function verifyGatewayCredential(
   }
 
   const [row] = await adminSql<UsageScope[]>`
-    SELECT k.id::text AS key_id, k.key_type, k.label, k.status, k.scopes
+    SELECT k.id::text AS key_id, k.key_type
       FROM llm.keys k
       JOIN llm.keys r ON r.id = COALESCE(k.root_key_id, k.id)
      WHERE ${

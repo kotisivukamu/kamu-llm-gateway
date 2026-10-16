@@ -1,18 +1,13 @@
 import { Hono } from "@hono/hono";
-import type { Context, Next } from "@hono/hono";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   effectivePrice,
   type FullRates,
   parsePriceForm,
 } from "@shared/prices.ts";
-import type { KeyScope } from "@shared/types.ts";
 import { MODELS } from "../../../proxy/src/catalog.ts";
 import { adminSql } from "../config/db.ts";
-import {
-  extractCredential,
-  type UsageScope,
-  verifyGatewayCredential,
-} from "../lib/keys.ts";
+import { env } from "../env.ts";
 import { clearPriceCache, reloadPriceTable } from "../lib/pricing.ts";
 
 // Internal price API (ADR 0003 §3 follow-up): the kamuhub billing worker
@@ -20,34 +15,30 @@ import { clearPriceCache, reloadPriceTable } from "../lib/pricing.ts";
 // what ingest charges per catalog model now and appends a row when a
 // provider's price differs.
 //
-// Authenticated like the key-holder GET /usage (the gateway key itself, not
-// the BFF context, so it lives outside /api), and gated on a scope: only an
-// active top-level key holding `prices:write` passes. Unknown, revoked or
-// expired credentials are 401; a valid key without the right is 403
-// (derived keys never carry scopes, over_budget keys are not active).
+// Authenticated with the INTERNAL_API_TOKEN service secret
+// (`Authorization: Bearer <token>`), which kamuhub holds as
+// KAMU_LLM_INTERNAL_TOKEN. Gateway keys are not accepted here at all: writing
+// what every key is billed is not something a key holder may do. Anything but
+// the exact token is 401.
 
-type InternalEnv = { Variables: { gatewayKey: UsageScope } };
+export const internal = new Hono();
 
-export const internal = new Hono<InternalEnv>();
+// Compared as SHA-256 digests so timingSafeEqual gets equal lengths and the
+// comparison time says nothing about the token, its length included.
+const digest = (s: string) => createHash("sha256").update(s).digest();
+const expected = digest(env.INTERNAL_API_TOKEN);
 
-function requireScope(scope: KeyScope) {
-  return async (c: Context<InternalEnv>, next: Next) => {
-    const key = await verifyGatewayCredential(
-      extractCredential(c.req.raw.headers),
-    );
-    if (!key) return c.json({ error: "unauthorized" }, 401);
-    if (
-      key.key_type !== "top" || key.status !== "active" ||
-      !key.scopes.includes(scope)
-    ) {
-      return c.json({ error: `forbidden: requires ${scope}` }, 403);
-    }
-    c.set("gatewayKey", key);
-    await next();
-  };
-}
+internal.use("/internal/*", async (c, next) => {
+  const auth = c.req.header("authorization") ?? "";
+  const presented = auth.replace(/^Bearer\s+/i, "").trim();
+  if (!presented || !timingSafeEqual(digest(presented), expected)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
 
-internal.use("/internal/prices", requireScope("prices:write"));
+// created_by of rows written through this API.
+const CREATED_BY = "internal:price-sync";
 
 const RATE_KEYS: (keyof FullRates)[] = [
   "input_cost_per_mtok_usd",
@@ -129,7 +120,6 @@ internal.post("/internal/prices", async (c) => {
     });
   }
 
-  const key = c.get("gatewayKey");
   const [row] = await adminSql<{ id: string; valid_from: Date }[]>`
     INSERT INTO llm.model_prices
       (model, input_cost_per_mtok_usd, output_cost_per_mtok_usd,
@@ -140,7 +130,7 @@ internal.post("/internal/prices", async (c) => {
        ${parsed.output_cost_per_mtok_usd}, ${parsed.cache_read_cost_per_mtok_usd},
        ${parsed.cache_write_cost_per_mtok_usd}, ${parsed.per_request_cost_usd},
        COALESCE(${parsed.valid_from}::timestamptz, now()), ${parsed.source},
-       ${parsed.note}, ${"key:" + key.label})
+       ${parsed.note}, ${CREATED_BY})
     RETURNING id::text, valid_from
   `;
   clearPriceCache();
@@ -153,7 +143,7 @@ internal.post("/internal/prices", async (c) => {
       valid_from: row.valid_from.toISOString(),
       source: parsed.source,
       note: parsed.note,
-      created_by: "key:" + key.label,
+      created_by: CREATED_BY,
       ...Object.fromEntries(RATE_KEYS.map((k) => [k, parsed[k]])),
     },
   }, 201);

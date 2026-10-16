@@ -70,6 +70,7 @@ setDefault("KEY_META_CACHE_TTL_SEC", "10");
 
 setDefault("LLM_PROXY_URL", "http://localhost:8301");
 setDefault("CONTROL_PLANE_POLL_TOKEN", "test-poll-token");
+setDefault("INTERNAL_API_TOKEN", "test-internal-token");
 // Effectively disabled for tests — nothing here exercises the poller's own
 // interval loop; usage-poller tests call pollOnce-equivalent logic directly.
 setDefault("USAGE_POLL_INTERVAL_MS", "3600000");

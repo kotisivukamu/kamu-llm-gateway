@@ -155,9 +155,6 @@ across the whole platform.
 shape, duplicated in `src/lib/keys.ts` rather than imported — see that file's
 header comment for why). Revoke runs the identical cascade query
 (`status='revoked' WHERE id = $1 OR root_key_id = $1`) as `api/`'s revoke route.
-Mint takes optional scopes (`shared/types.ts` `KeyScope`; a checkbox per scope
-on the form, `scopes: [...]` on the JSON API), set at mint time only. Today the
-one scope is `prices:write` (the api's `/internal/prices`).
 
 ### Feature 4 — prices (ADR 0003 §3)
 

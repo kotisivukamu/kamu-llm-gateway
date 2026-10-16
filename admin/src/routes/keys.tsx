@@ -3,7 +3,6 @@ import { requireSession, type SessionEnv } from "../middleware/session.ts";
 import { adminSql } from "../config/db.ts";
 import { Layout } from "../views/layout.tsx";
 import { generateTopLevelKey } from "../lib/keys.ts";
-import type { KeyScope } from "@shared/types.ts";
 
 // Superuser key provisioning: mint or revoke a top-level key in any org,
 // outside the kamuhub grant model (e.g. keys for platform services).
@@ -12,18 +11,6 @@ import type { KeyScope } from "@shared/types.ts";
 // POST /keys/:id/revoke (status='revoked' on the key AND every row where
 // root_key_id = id, in one statement) — same query, admin_sql instead of
 // api's adminSql, no RLS involved either way.
-//
-// Scopes (shared/types.ts KeyScope) are set at mint time only; to change them
-// on an existing key, UPDATE llm.keys SET scopes = ... by hand.
-
-const SCOPES: KeyScope[] = ["prices:write"];
-
-function parseScopes(raw: unknown[]): KeyScope[] | string {
-  const bad = raw.find((s) => !SCOPES.includes(s as KeyScope));
-  return bad === undefined
-    ? raw as KeyScope[]
-    : `unknown scope ${String(bad)} (known: ${SCOPES.join(", ")})`;
-}
 
 interface KeyRow {
   id: string;
@@ -35,7 +22,6 @@ interface KeyRow {
   status: string;
   models: string[];
   budget_usd: string | null;
-  scopes: string[];
   created_at: string;
   revoked_at: string | null;
 }
@@ -50,8 +36,7 @@ async function listKeys(): Promise<KeyRow[]> {
   return await adminSql<KeyRow[]>`
     SELECT k.id::text, k.team_id::text, t.kamuid_org_id AS org, k.label,
            k.prefix, k.key_type, k.status, k.models,
-           k.budget_usd::text AS budget_usd, k.scopes,
-           k.created_at::text AS created_at,
+           k.budget_usd::text AS budget_usd, k.created_at::text AS created_at,
            k.revoked_at::text AS revoked_at
     FROM llm.keys k
     JOIN llm.teams t ON t.id = k.team_id
@@ -91,11 +76,6 @@ keysRoutes.get("/keys", async (c) => {
             </select>
             <input name="label" placeholder="label" required />
             <input name="budget_usd" placeholder="budget_usd (optional)" />
-            {SCOPES.map((s) => (
-              <label>
-                <input type="checkbox" name="scopes" value={s} /> {s}
-              </label>
-            ))}
             <button type="submit">Create key</button>
           </div>
         </form>
@@ -111,7 +91,6 @@ keysRoutes.get("/keys", async (c) => {
             <th>Type</th>
             <th>Status</th>
             <th>Budget</th>
-            <th>Scopes</th>
             <th>Created</th>
             <th></th>
           </tr>
@@ -127,7 +106,6 @@ keysRoutes.get("/keys", async (c) => {
               <td>{k.key_type}</td>
               <td>{k.status}</td>
               <td>{k.budget_usd ?? "-"}</td>
-              <td>{k.scopes.join(", ") || "-"}</td>
               <td class="muted">{k.created_at}</td>
               <td>
                 {k.status === "active"
@@ -157,7 +135,6 @@ keysRoutes.post("/keys", async (c) => {
   const label = String(form.get("label") ?? "").trim();
   const budgetRaw = String(form.get("budget_usd") ?? "").trim();
   const budget = budgetRaw ? Number(budgetRaw) : null;
-  const scopes = parseScopes(form.getAll("scopes"));
 
   if (!teamId || !label) {
     return c.redirect(
@@ -169,19 +146,16 @@ keysRoutes.post("/keys", async (c) => {
       `/keys?err=${encodeURIComponent("budget_usd must be a number")}`,
     );
   }
-  if (typeof scopes === "string") {
-    return c.redirect(`/keys?err=${encodeURIComponent(scopes)}`);
-  }
 
   const { secret, hash, prefix } = await generateTopLevelKey();
 
   const [row] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
       (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-       status, root_key_id, created_by, scopes)
+       status, root_key_id, created_by)
     VALUES
       (${teamId}, ${label}, ${hash}, ${prefix}, 'top', ${["*"]}, ${budget},
-       'active', null, ${"admin:" + admin.email}, ${scopes})
+       'active', null, ${"admin:" + admin.email})
     RETURNING id
   `;
   await adminSql`
@@ -222,28 +196,24 @@ keysRoutes.post("/api/keys", async (c) => {
     team_id?: string;
     label?: string;
     budget_usd?: number | null;
-    scopes?: unknown[];
   }>();
   if (!body.team_id || !body.label) {
     return c.json({ error: "team_id and label are required" }, 400);
   }
-  const scopes = parseScopes(body.scopes ?? []);
-  if (typeof scopes === "string") return c.json({ error: scopes }, 400);
   const { secret, hash, prefix } = await generateTopLevelKey();
   const [row] = await adminSql<{ id: string }[]>`
     INSERT INTO llm.keys
       (team_id, label, key_hash, prefix, key_type, models, budget_usd,
-       status, root_key_id, created_by, scopes)
+       status, root_key_id, created_by)
     VALUES
       (${body.team_id}, ${body.label}, ${hash}, ${prefix}, 'top', ${["*"]},
-       ${body.budget_usd ?? null}, 'active', null, ${"admin:" + admin.email},
-       ${scopes})
+       ${body.budget_usd ?? null}, 'active', null, ${"admin:" + admin.email})
     RETURNING id
   `;
   await adminSql`
     UPDATE llm.keys SET root_key_id = id, updated_at = now() WHERE id = ${row.id}
   `;
-  return c.json({ key: { id: row.id, prefix, scopes }, secret }, 201);
+  return c.json({ key: { id: row.id, prefix }, secret }, 201);
 });
 
 keysRoutes.post("/api/keys/:id/revoke", async (c) => {

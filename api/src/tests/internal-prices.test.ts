@@ -8,13 +8,17 @@ import { pollOnce } from "../lib/usage-poller.ts";
 import { buildTestApp, testRequest } from "./support/app.ts";
 import { adminSql, resetDb, seedKey, seedTeam } from "./support/db.ts";
 
-// Internal price API (/internal/prices): scope gate, the GET shape, append-only
-// POST with its unchanged check and validation, and that ingest prices with a
-// row added through it straight away.
+// Internal price API (/internal/prices): the INTERNAL_API_TOKEN gate, the GET
+// shape, append-only POST with its unchanged check and validation, and that
+// ingest prices with a row added through it straight away.
 
 const T = { sanitizeOps: false, sanitizeResources: false };
 
-async function fixture(scopes: string[] = ["prices:write"]) {
+const TOKEN = Deno.env.get("INTERNAL_API_TOKEN")!;
+
+// A team with an active top-level key: the gate test shows the key is
+// refused, the ingest test bills a usage row to it.
+async function fixture() {
   await resetDb();
   const team = await seedTeam();
   const secret = `sk_live_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -22,7 +26,6 @@ async function fixture(scopes: string[] = ["prices:write"]) {
     teamId: team.id,
     label: "kamuhub-billing-worker",
     keyHash: await hashKey(secret),
-    scopes,
   });
   return { team, key, secret };
 }
@@ -48,48 +51,32 @@ function get(token: string) {
   return testRequest(buildTestApp(), "GET", "/internal/prices", { token });
 }
 
-Deno.test("internal prices: scope gate", T, async () => {
-  const k = await fixture([]);
-  assertEquals((await get(k.secret)).status, 403);
-  assertEquals((await post(k.secret, body)).status, 403);
-  assertEquals((await get("sk_live_nope")).status, 401);
-  assertEquals((await get("")).status, 401);
-
-  // A scoped parent's derived key gets no scopes and is refused.
-  await adminSql`UPDATE llm.keys SET scopes = '{prices:write}' WHERE id = ${k.key}`;
-  assertEquals((await get(k.secret)).status, 200);
-  const res = await testRequest(buildTestApp(), "POST", "/api/keys/derive", {
-    token: k.secret,
-    body: { label: "build" },
-  });
-  assertEquals(res.status, 201);
-  const derived = await res.json();
-  const [row] = await adminSql<{ scopes: string[] }[]>`
-    SELECT scopes FROM llm.keys WHERE id = ${derived.key.id}
-  `;
-  assertEquals(row.scopes, []);
-  assertEquals((await get(derived.sub_key)).status, 403);
-
-  // The DB refuses scopes on a derived row whatever the writer.
-  let refused = false;
-  try {
-    await adminSql`UPDATE llm.keys SET scopes = '{prices:write}' WHERE id = ${derived.key.id}`;
-  } catch {
-    refused = true;
+Deno.test("internal prices: token gate", T, async () => {
+  const k = await fixture();
+  for (const token of ["", "wrong", TOKEN + "x", TOKEN.slice(1)]) {
+    assertEquals((await get(token)).status, 401, token);
+    assertEquals((await post(token, body)).status, 401, token);
   }
-  assert(refused);
 
-  // over_budget is not active: 403. Revoked: 401.
-  await adminSql`UPDATE llm.keys SET status = 'over_budget' WHERE id = ${k.key}`;
-  assertEquals((await get(k.secret)).status, 403);
-  await adminSql`UPDATE llm.keys SET status = 'revoked' WHERE id = ${k.key}`;
+  // A valid, active gateway key is not accepted, by bearer or x-api-key.
   assertEquals((await get(k.secret)).status, 401);
   assertEquals((await post(k.secret, body)).status, 401);
+  const viaHeader = await buildTestApp().request("/internal/prices", {
+    headers: { "x-api-key": k.secret },
+  });
+  assertEquals(viaHeader.status, 401);
+  const [{ n }] = await adminSql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM llm.model_prices
+  `;
+  assertEquals(n, 0);
+
+  assertEquals((await get(TOKEN)).status, 200);
+  assertEquals((await post(TOKEN, body)).status, 201);
 });
 
 Deno.test("internal prices: GET lists every catalog model", T, async () => {
-  const k = await fixture();
-  const res = await get(k.secret);
+  await fixture();
+  const res = await get(TOKEN);
   assertEquals(res.status, 200);
   const { models } = await res.json();
   assertEquals(models.length, Object.keys(MODELS).length);
@@ -119,14 +106,14 @@ Deno.test("internal prices: GET lists every catalog model", T, async () => {
   assertEquals(haiku.long_context, true);
 
   // A DB row shows as the effective price with its id/valid_from/source.
-  const created = await (await post(k.secret, body)).json();
-  const after = (await (await get(k.secret)).json()).models.find((
+  const created = await (await post(TOKEN, body)).json();
+  const after = (await (await get(TOKEN)).json()).models.find((
     m: { model: string },
   ) => m.model === "glm-5.3");
   assertEquals(after.price.kind, "db");
   assertEquals(after.price.id, created.price.id);
   assertEquals(after.price.source, "cortecs");
-  assertEquals(after.price.created_by, "key:kamuhub-billing-worker");
+  assertEquals(after.price.created_by, "internal:price-sync");
   assertEquals(after.price.input_cost_per_mtok_usd, 0.8123);
   assertEquals(typeof after.price.valid_from, "string");
 });
@@ -135,8 +122,8 @@ Deno.test(
   "internal prices: POST inserts, then reports unchanged",
   T,
   async () => {
-    const k = await fixture();
-    const first = await post(k.secret, { ...body, note: "daily sync" });
+    await fixture();
+    const first = await post(TOKEN, { ...body, note: "daily sync" });
     assertEquals(first.status, 201);
     const created = await first.json();
     assertEquals(created.unchanged, false);
@@ -147,12 +134,12 @@ Deno.test(
     SELECT created_by, note, per_request_cost_usd::text AS per_request
       FROM llm.model_prices WHERE id = ${created.price.id}
   `;
-    assertEquals(row.created_by, "key:kamuhub-billing-worker");
+    assertEquals(row.created_by, "internal:price-sync");
     assertEquals(row.note, "daily sync");
     assertEquals(Number(row.per_request), 0);
 
     // Same rates again (extra decimals beyond NUMERIC(12,6) included): no row.
-    const again = await post(k.secret, {
+    const again = await post(TOKEN, {
       ...body,
       input_cost_per_mtok_usd: 0.8123001,
     });
@@ -164,7 +151,7 @@ Deno.test(
       !m.long_context && m.cache_read_cost_per_mtok_usd !== undefined &&
       m.cache_write_cost_per_mtok_usd !== undefined && m !== MODELS["glm-5.3"]
     )!;
-    const catalogMatch = await post(k.secret, {
+    const catalogMatch = await post(TOKEN, {
       model: slug,
       input_cost_per_mtok_usd: entry.input_cost_per_mtok_usd,
       output_cost_per_mtok_usd: entry.output_cost_per_mtok_usd,
@@ -177,7 +164,7 @@ Deno.test(
     assertEquals((await catalogMatch.json()).unchanged, true);
 
     // A changed rate appends a second row.
-    const moved = await post(k.secret, {
+    const moved = await post(TOKEN, {
       ...body,
       output_cost_per_mtok_usd: 3,
     });
@@ -190,9 +177,9 @@ Deno.test(
 );
 
 Deno.test("internal prices: POST validation", T, async () => {
-  const k = await fixture();
+  await fixture();
   const bad = async (b: unknown) => {
-    const res = await post(k.secret, b);
+    const res = await post(TOKEN, b);
     assertEquals(res.status, 400, JSON.stringify(b));
     return (await res.json()).error as string;
   };
@@ -220,7 +207,7 @@ Deno.test("internal prices: ingest uses a posted row at once", T, async () => {
   // Warm this machine's 30 s price cache with the empty table.
   assertEquals((await priceTable()).size, 0);
 
-  const res = await post(k.secret, {
+  const res = await post(TOKEN, {
     ...body,
     valid_from: "2026-10-01T00:00:00Z",
   });

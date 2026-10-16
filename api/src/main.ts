@@ -50,8 +50,8 @@ app.get("/health", (c) => c.json({ ok: true }));
 // the proxy's GET /usage it replaces for cost readers.
 app.route("/", keyUsage);
 
-// Internal price API for the kamuhub billing worker's price sync: the same
-// key-holder auth, plus the key's prices:write scope.
+// Internal price API for the kamuhub billing worker's price sync, behind the
+// INTERNAL_API_TOKEN service secret (no gateway key is accepted there).
 app.route("/", internal);
 
 // Derive is a SEPARATE auth path: it authenticates with the PARENT KEY

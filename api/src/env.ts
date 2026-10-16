@@ -109,6 +109,12 @@ const schema = z.object({
   LLM_PROXY_URL: z.string().url().default("http://localhost:8301"),
   CONTROL_PLANE_POLL_TOKEN: z.string().min(1),
   USAGE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
+
+  // Service-to-service secret for the root /internal/* routes (the kamuhub
+  // billing worker's price sync, routes/internal.ts), presented as
+  // `Authorization: Bearer <token>`. kamuhub holds the same value as
+  // KAMU_LLM_INTERNAL_TOKEN. Not a gateway key: no key can call /internal/*.
+  INTERNAL_API_TOKEN: z.string().min(1),
 });
 
 const parsed = schema.safeParse(Deno.env.toObject());
