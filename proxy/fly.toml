@@ -25,8 +25,8 @@ kill_timeout = "15s"
 # Secrets (Doppler -> Fly secrets, never in this file): GATEWAY_DATABASE_URL,
 # ED25519_PUBLIC_KEY, ED25519_KEY_ID, CONTROL_PLANE_POLL_TOKEN and one key per
 # upstream provider: ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY,
-# MOONSHOT_API_KEY, CORTECS_API_KEY, TENSORX_API_KEY, GEMINI_API_KEY. A
-# provider whose key is unset answers 502 provider_key_missing.
+# MOONSHOT_API_KEY, CORTECS_API_KEY, TENSORX_API_KEY, GEMINI_API_KEY,
+# JEV_API_KEY. A provider whose key is unset answers 502 provider_key_missing.
 
 [mounts]
   source = "proxy_data"

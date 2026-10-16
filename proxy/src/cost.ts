@@ -24,6 +24,13 @@ export interface NormUsage {
 // deno-lint-ignore no-explicit-any
 type Json = any;
 
+export const NO_USAGE: NormUsage = {
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_read_tokens: 0,
+  cache_write_tokens: 0,
+};
+
 function num(v: unknown): number {
   return typeof v === "number" ? v : 0;
 }
@@ -161,6 +168,7 @@ export function extractUsageFromSse(text: string): NormUsage | null {
 }
 
 // USD cost of one request given normalised usage and the model's catalog entry.
+// A per-request charge (per_request_cost_usd) is added on top of token cost.
 // Catalog entries without explicit cache rates fall back to the Anthropic
 // multipliers (read = 0.1x input, write = 1.25x input) — over-counting on
 // providers that don't surcharge writes, which is the safe direction for a
@@ -177,10 +185,10 @@ export function computeCostUsd(model: ModelEntry, usage: NormUsage): number {
     rates.input_cost_per_mtok_usd * 0.1;
   const writeRate = rates.cache_write_cost_per_mtok_usd ??
     rates.input_cost_per_mtok_usd * 1.25;
-  return (
-    usage.input_tokens * rates.input_cost_per_mtok_usd +
-    usage.output_tokens * rates.output_cost_per_mtok_usd +
-    usage.cache_read_tokens * readRate +
-    usage.cache_write_tokens * writeRate
-  ) / 1_000_000;
+  return (model.per_request_cost_usd ?? 0) + (
+        usage.input_tokens * rates.input_cost_per_mtok_usd +
+        usage.output_tokens * rates.output_cost_per_mtok_usd +
+        usage.cache_read_tokens * readRate +
+        usage.cache_write_tokens * writeRate
+      ) / 1_000_000;
 }

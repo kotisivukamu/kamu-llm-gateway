@@ -42,6 +42,25 @@ Two credential shapes, both first-class `keys` rows:
 Usage is a gateway-owned ledger keyed by `key_id`, with `parent_key_id` +
 `root_key_id` lineage columns so spend rolls up to a service's whole subtree.
 
+## Upstream providers
+
+Callers hit `${KAMU_LLM_PROXY_URL}/llm/<provider>/<upstream path>` with their
+gateway key; the proxy swaps in the provider key and forwards. Providers and
+model prices live in `proxy/src/catalog.ts`. Each provider's upstream key is an
+env var named there (`ANTHROPIC_API_KEY`, `CORTECS_API_KEY`, ...), set in
+Doppler and synced to the `kamu-llm-gateway-proxy` Fly app as a secret; a
+provider whose key is unset answers 502 `provider_key_missing`.
+
+**Jev** (TypeSafe System One, a calibrated classifier) is routed at
+`POST /llm/jev/v1/systemone`. The body is Jev's own (`model`, `state`,
+`questions`) and the response comes back unchanged. The caller's key must grant
+the model (e.g. `jev-latest`, or `*`). Jev bills per request, so `jev-latest` is
+metered by `per_request_cost_usd`: one usage row per call, cost 0 until its
+price is filled in (TODO in the catalog). To enable it in prod, add
+`JEV_API_KEY` to the gateway proxy's Doppler config (or
+`fly secrets set JEV_API_KEY=... -a kamu-llm-gateway-proxy`), which restarts the
+machines with the key.
+
 ## Identity & org model
 
 - KamuID owns identity, orgs, and membership. A KamuID **org** projects into a

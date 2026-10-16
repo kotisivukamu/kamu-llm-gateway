@@ -67,6 +67,12 @@ export interface ModelEntry {
   // billed at these rates instead of the base ones — Anthropic's rule for
   // Claude Haiku 5.5 (prompts over 100,000 tokens), where each request is
   // priced on its own and a cache hit doesn't lower the tier.
+  // Flat USD charge per successful request, for upstreams that bill per call
+  // rather than per token (the Jev classifier). When set, proxy.ts records a
+  // usage_log row for every 2xx even if the response carries no token usage,
+  // and computeCostUsd adds this on top of any token cost. Token-billed models
+  // leave it unset.
+  per_request_cost_usd?: number;
   long_context?: {
     above_prompt_tokens: number;
     input_cost_per_mtok_usd: number;
@@ -89,6 +95,10 @@ const OPENAI_COMPAT_PATHS: RegExp[] = [
   /^\/v1\/models(?:\/.*)?$/,
   /^\/v1\/embeddings$/,
 ];
+
+// Jev (TypeSafe System One) has a single endpoint: one POST answers a set of
+// typed questions (choice, score, ...) with calibrated probabilities.
+const JEV_PATHS: RegExp[] = [/^\/v1\/systemone$/];
 
 // Speech-to-text for voice notes and dashboard voice input. Only OpenAI
 // serves it; the body is multipart audio. proxy.ts buffers the form to read
@@ -158,6 +168,16 @@ export const PROVIDERS: Record<string, ProviderEntry> = {
     api_key_env_var: "GEMINI_API_KEY",
     allowed_paths: OPENAI_COMPAT_PATHS,
     strip_path_prefix: "/v1",
+  },
+  // Jev — TypeSafe System One, a calibrated classifier API, not a chat model.
+  // Callers POST /llm/jev/v1/systemone with the same body Jev takes
+  // ({ model, state, questions }); the response comes back unchanged. Not in
+  // the pi catalog (it speaks no chat protocol).
+  jev: {
+    base_url: "https://api.typesafe.ai",
+    auth_style: "bearer",
+    api_key_env_var: "JEV_API_KEY",
+    allowed_paths: JEV_PATHS,
   },
 };
 
@@ -703,6 +723,22 @@ export const MODELS: Record<string, ModelEntry> = {
     output_cost_per_mtok_usd: 2.0,
     cache_read_cost_per_mtok_usd: 0.1,
     cache_write_cost_per_mtok_usd: 0.4,
+  },
+
+  // --- Jev (TypeSafe System One) ------------------------------------------
+  // Billed per request, not per token, so the token rates are zero and every
+  // call is metered through per_request_cost_usd (one usage_log row per
+  // request, token columns filled only if a response ever reports usage).
+  // TODO: Jev's per-request price is not known yet. Fill per_request_cost_usd
+  // from TypeSafe's pricing or invoice once we have it; until then Jev calls
+  // are logged per key at cost 0 (and do not count against key budgets).
+  "jev-latest": {
+    provider_slug: "jev",
+    input_cost_per_mtok_usd: 0,
+    output_cost_per_mtok_usd: 0,
+    cache_read_cost_per_mtok_usd: 0,
+    cache_write_cost_per_mtok_usd: 0,
+    per_request_cost_usd: 0,
   },
 };
 

@@ -14,6 +14,7 @@ import {
   computeCostUsd,
   extractUsageFromJson,
   extractUsageFromSse,
+  NO_USAGE,
 } from "../cost.ts";
 import { recordUsage } from "../db.ts";
 import { getSpentUsd, recordSpend } from "../gateway-db.ts";
@@ -357,10 +358,14 @@ proxy.all("/:provider_slug/*", async (c) => {
   (async () => {
     try {
       const buffered = await new Response(meterBranch).text();
-      const usage = isSse
+      const reported = isSse
         ? extractUsageFromSse(buffered)
         : extractUsageFromJson(safeJsonParse(buffered));
-      if (!usage) return;
+      // Per-request-billed models (Jev) get a row for every call even when the
+      // response reports no tokens; token-billed ones need usage to price.
+      const perRequest = model?.per_request_cost_usd !== undefined;
+      if (!reported && !perRequest) return;
+      const usage = reported ?? NO_USAGE;
 
       // Cost is null when the model has no catalog price — token counts are
       // still recorded so the gap is visible and re-priceable later.

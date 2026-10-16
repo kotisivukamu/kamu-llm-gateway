@@ -289,6 +289,88 @@ Deno.test({
 });
 
 Deno.test({
+  name: "jev: systemone is forwarded with the Jev key and logged per request",
+  fn: async () => {
+    const key = await seedKey(["jev-latest"]);
+    Deno.env.set("JEV_API_KEY", "jev-test-upstream");
+    const sent = {
+      model: "jev-latest",
+      state: "Previous: invoice question. New: thanks, paid now.",
+      questions: {
+        related: {
+          type: "choice",
+          instructions: "Is the new message part of the same conversation?",
+          criteria: { yes: "Same topic", no: "A new topic" },
+        },
+      },
+    };
+    // No usage block: Jev bills per request, so the row is logged anyway.
+    const reply = {
+      model: "jev-2026-10",
+      answers: {
+        related: {
+          choice: "yes",
+          confidence: 0.91,
+          probabilities: { yes: 0.91, no: 0.09 },
+        },
+      },
+    };
+    await withUpstream(reply, async (calls) => {
+      const res = await app.request("/llm/jev/v1/systemone", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.secret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(sent),
+      });
+      assertEquals(res.status, 200);
+      assertEquals(await res.json(), reply);
+      assertEquals(calls.length, 1);
+      assertEquals(calls[0].url, "https://api.typesafe.ai/v1/systemone");
+      assertEquals(
+        calls[0].headers.get("authorization"),
+        "Bearer jev-test-upstream",
+      );
+      assertEquals(
+        JSON.parse(new TextDecoder().decode(calls[0].body)),
+        sent,
+      );
+    });
+    const rows = await usageRows(key.id, 1);
+    assertEquals(rows, [{
+      model: "jev-latest",
+      input_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+    }]);
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "jev: only /v1/systemone is reachable",
+  fn: async () => {
+    const key = await seedKey(["*"]);
+    Deno.env.set("JEV_API_KEY", "jev-test-upstream");
+    await withUpstream({}, async (calls) => {
+      const res = await app.request("/llm/jev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.secret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "jev-latest" }),
+      });
+      assertEquals(res.status, 403);
+      assertEquals((await res.json()).error, "path_not_allowed");
+      assertEquals(calls.length, 0);
+    });
+  },
+  ...opts,
+});
+
+Deno.test({
   name: "proxy route: close pools",
   fn: async () => {
     await admin.end();

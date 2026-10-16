@@ -106,3 +106,20 @@ Deno.test("total_tokens equal to the plain sum adds nothing", () => {
     usage(50, 33),
   );
 });
+
+Deno.test("per_request_cost_usd is charged once per request on top of token cost", () => {
+  const entry = {
+    provider_slug: "jev",
+    input_cost_per_mtok_usd: 1,
+    output_cost_per_mtok_usd: 2,
+    per_request_cost_usd: 0.003,
+  };
+  assertAlmostEquals(computeCostUsd(entry, usage(0, 0)), 0.003, 1e-12);
+  assertAlmostEquals(
+    computeCostUsd(entry, usage(1_000, 500)),
+    0.003 + (1_000 * 1 + 500 * 2) / 1e6,
+    1e-12,
+  );
+  // jev-latest: price unknown, logged at 0 until the catalog TODO is filled.
+  assertEquals(computeCostUsd(MODELS["jev-latest"], usage(0, 0)), 0);
+});

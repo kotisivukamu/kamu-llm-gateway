@@ -45,6 +45,7 @@ catalog.get("/", async (c) => {
         output_cost_per_mtok_usd: m.output_cost_per_mtok_usd,
         cache_read_cost_per_mtok_usd: m.cache_read_cost_per_mtok_usd ?? null,
         cache_write_cost_per_mtok_usd: m.cache_write_cost_per_mtok_usd ?? null,
+        per_request_cost_usd: m.per_request_cost_usd ?? null,
         long_context: m.long_context ?? null,
       })),
   });
@@ -94,6 +95,14 @@ export const piCatalogHandler = async (c: Context) => {
   const providers: Record<string, unknown> = {};
 
   for (const [slug, provider] of Object.entries(PROVIDERS)) {
+    // Only chat providers belong in pi's catalog; Jev's classifier endpoint
+    // speaks neither protocol.
+    if (
+      !provider.allowed_paths.some((re) =>
+        re.test("/v1/messages") || re.test("/v1/chat/completions")
+      )
+    ) continue;
+
     // Native Anthropic wire protocol is the only non-OpenAI shape we speak.
     const api = provider.auth_style === "x-api-key"
       ? "anthropic-messages"
