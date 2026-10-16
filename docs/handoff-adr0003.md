@@ -1,7 +1,8 @@
 # ADR 0003 handoff
 
-Waves 1 (api + database) and 2 (proxy) of 4. Committed locally on `main`, not
-pushed, not released.
+Waves 1 (api + database), 2 (proxy) and 3 (cost readers) of 4. Committed
+locally on `main`, not pushed, not released. Wave 3 also touches the builder
+repo.
 
 ## Wave 1: done
 
@@ -86,12 +87,123 @@ Commits `3c03920` (proxy + api flag) and `9e82a5b` (reactivation trigger).
 - Tests: api 34/34, proxy 52/52 against the wave-1 container (port 55441);
   `deno task validate` clean for both; both images build.
 
+## Wave 3: done
+
+Gateway commit `425ae1e`, builder commit `73bd578` (builder repo `main`).
+
+- **api `GET /usage`** (`api/src/routes/usage.ts` `keyUsage`, mounted at the
+  root, outside `/api`, because `/api` is BFF-context authenticated). The
+  proxy's key-holder contract served from `llm.usage_log`: same credential
+  (`x-api-key` or bearer; `sk_live_` by hash, derived JWT by Ed25519 signature
+  then its row; `active` or `over_budget`, unexpired, root too:
+  `verifyGatewayCredential` in `api/src/lib/keys.ts`, one DB read, no cache),
+  same scope (top key = its subtree by `root_key_id`, derived = itself;
+  `key_id`/`jti`/`name` only narrow), same cursor (`id` = `cursorOf(usage_id)`,
+  identical to the proxy's), same `{ rows, max_id, totals }`. Rows carry the
+  ingest-priced `cost_usd`, both cache buckets, `price_id`, `provider_cost`,
+  `provider_cost_currency`; no `provider_slug` (not stored). Rows sharing the
+  last row's cursor stay in a full page, as on the proxy. The dashboard's
+  `/api/usage*` aggregates are unchanged.
+- **Ingest lag: an ingest barrier, not a watermark.** Each read first awaits
+  `ingestNow()` (`api/src/lib/usage-poller.ts`): a full pass over every proxy
+  machine that *started after* the request arrived. When it returns with no
+  failed machine, every row any proxy wrote before the read is in Postgres, so
+  the answer is complete with no clock comparison. Why not a watermark ("all
+  rows before T ingested"): it needs either state shared between api machines
+  or comparing proxy, api and builder wall clocks; the barrier needs neither.
+  Multiple api machines are fine because each one polls every proxy machine
+  itself (the existing design), and concurrent passes already dedupe on
+  `usage_id` (a conflicting insert waits for the other machine's commit, then
+  does nothing; only `RETURNING` rows are charged). Readers arriving during a
+  pass share one queued pass behind it, and the interval loop uses the same
+  runner, so a burst of readers costs at most one extra pass per api machine
+  and passes never overlap on one machine. The wait is capped at 5 s.
+- **Partial answers.** `pollAll` now returns the machines it could not poll
+  (`"discovery"` if the TXT lookup failed); the route sends them in
+  `X-Usage-Partial` (or `timeout` after 5 s), like the proxy does for a sibling
+  that does not answer. Rows are still served.
+- **Builder** (`builder/src/kamuagent.ts`, `process.ts`, `config.ts`): new
+  optional env `LLM_GATEWAY_API_URL`; `usageBaseUrl()` = it, else
+  `LLM_PROXY_URL` (the old proxy read, catalog estimate), so deploy order is
+  safe. The end-of-step total is `UsagePoller.final()`: a recount from the
+  step's baseline cursor (a mid-step read can move the cursor past a row that
+  another proxy machine wrote a moment earlier but was ingested later; the
+  running totals only drive the budget kill, the recount is what is billed),
+  retried every 1 s while the answer is partial or the read fails, for up to
+  15 s, then taken as is with a warning. Mid-step polls are unchanged.
+- **Other readers of proxy `/usage`**: none. Workspace grep (`/usage?since`,
+  `llm.kamuhub.com`, `kamu-llm-gateway-proxy`, `max_id`, `X-Usage-Partial`,
+  excluding node_modules/.claude/sites) finds only the builder; the hostname
+  hits are LLM call base URLs (kotisivukamu api/worker/internal-api/
+  agent-service, studio, kamusites, kamudns, kamubox, kamuhub agent, kamukit).
+  `kamukit/agent/HANDOFF.md` mentions the builder's read in prose only.
+- Tests: api 40/40 (new `key-usage.test.ts`: ingest-on-read + priced cost,
+  paging by `since`, scope and narrowing, credential checks incl. over_budget
+  and revoked root, partial header; `ingestNow` coalescing in
+  `usage-poller.test.ts`), proxy 52/52, `deno task validate` clean for both
+  (container on 55441). Builder: `npm test` 51/51 (final recount + partial and
+  error retry, give-up bound, source selection, end-to-end step reading usage
+  from `LLM_GATEWAY_API_URL`), `npm run typecheck` clean.
+
+### Prod changes for wave 3
+
+1. **builder-queue (kotisivukamu repo, not done here)** must pass the URL into
+   the build machine env, next to `LLM_PROXY_URL`, in
+   `builder-queue/src/tasks/build_site.ts` and `update_site.ts`:
+   `LLM_GATEWAY_API_URL: env.KAMU_LLM_API_URL`. `KAMU_LLM_API_URL` is already
+   a builder-queue secret (`https://kamu-llm-gateway-api.fly.dev`, used for
+   derive), so no new secret. Use the public URL, not
+   `http://kamu-llm-gateway-api.internal:8300`: build machines reach the proxy
+   publicly (`https://llm.kamuhub.com`) today and the api's 6PN reachability
+   from the `kotisivukamu-builder` app is not established. For local builder
+   mode (`LOCAL_BUILDER_URL`), set `LLM_GATEWAY_API_URL=http://localhost:8300`
+   in the builder's own env.
+2. No new gateway secrets or env. The api already has `LLM_PROXY_URL`
+   (`http://kamu-llm-gateway-proxy.internal:8301`), `CONTROL_PLANE_POLL_TOKEN`
+   and `ED25519_PUBLIC_KEY`, which is all the route needs.
+
+### Release order
+
+1. Gateway release with waves 1-3 (api + proxy + migrations; the proxy change
+   in wave 3 is a comment only). Must come first: a builder pointed at an api
+   without `GET /usage` gets 404 and records no cost.
+2. Builder release (falls back to the proxy until the env var arrives).
+3. kotisivukamu release with the builder-queue env line. 2 and 3 are safe in
+   either order (an old builder ignores the extra env), but 3 is what switches
+   billing to the api.
+
+After 3 is live (check a build's `step_usage` lines against
+`llm.usage_log` for its jti), wave 4 can drop the proxy's catalog estimate:
+SQLite `cost_usd`, `cost_usd` in proxy `GET /usage`, the `computeCostUsd`
+re-export in `proxy/src/cost.ts` and the call in `proxy.ts`. Not before: the
+deployed builder reads it until then. The builder's proxy fallback can go at
+the same time (make `LLM_GATEWAY_API_URL` required).
+
+### Risks
+
+- Every key-holder read now costs an ingest pass (per api machine: one TXT
+  lookup, one `newestStored` query and one HTTP page per proxy machine), at
+  most one queued pass however many readers. Builds read every 10 s per step,
+  so this is small; a much larger reader population would want a short
+  "recent pass" reuse window.
+- Read latency includes the pass (normally tens of ms, capped at 5 s).
+- A proxy machine that stays unreachable makes final totals short by its rows
+  after the 15 s wait (logged); the rows still land in `llm.usage_log` and
+  `key_spend` later, only `builds.cost_usd` misses them. Same failure mode as
+  the proxy's sibling fan-out before.
+- Clock skew only matters for the baseline (a step's first row would need a
+  usage_id below the previous step's last row), which needs skew larger than
+  the gap between steps.
+- Cost per build changes from the proxy catalog estimate to the api price
+  (`model_prices`, else the same catalog), so builds bill identically until a
+  `model_prices` row is added.
+
 ## What the next waves must know
 
-- **Readers (§5)**: the builder (`builder/src/kamuagent.ts` UsagePoller) and
-  anything else reading cost from the proxy's `GET /usage` must move to the
-  api's usage endpoint. Then drop SQLite `cost_usd`, the `computeCostUsd`
-  re-export in `proxy/src/cost.ts`, and the catalog estimate in `proxy.ts`.
+- **Readers (§5)**: done in wave 3 (the builder was the only one). Once the
+  builder-queue env line is live, drop SQLite `cost_usd`, the `computeCostUsd`
+  re-export in `proxy/src/cost.ts`, and the catalog estimate in `proxy.ts`
+  (see "Release order" above).
 - **Consumers must handle 402 `budget_exceeded`** (the old error string was
   `budget_exhausted`; grep callers that matched on it).
 - **Admin budget edits**: just `UPDATE llm.keys SET budget_usd = ...`; the
