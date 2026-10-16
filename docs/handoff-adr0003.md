@@ -217,7 +217,7 @@ the same time (make `LLM_GATEWAY_API_URL` required).
 - **Long-context models are blocked** (claude-haiku-5-5 today): the form is
   replaced by an explanation and the POST rejects them. A row that exists
   anyway (inserted by SQL) is still shown and is what ingest uses.
-- Validation (`admin/src/lib/prices.ts` `parsePriceForm`): model in the
+- Validation (`parsePriceForm`, then `admin/src/lib/prices.ts`, now `shared/prices.ts`): model in the
   catalog, four token rates required, all rates 0..999999 (NUMERIC(12,6)),
   per_request blank = 0, source required.
 - Tests: new `admin/src/tests/prices.test.ts` (5, pure: resolution incl.
@@ -229,6 +229,92 @@ the same time (make `LLM_GATEWAY_API_URL` required).
   `cost_usd` etc., see "Release order"). It waits on the builder-queue env line
   being live in prod, so it is a follow-up after release, not part of this
   wave.
+
+## Internal price API
+
+For the kamuhub billing worker's daily cortecs price sync (the scheduled job ADR
+0003's Consequences call for). Lives in `api/src/routes/internal.ts`, mounted at
+the root next to `GET /usage`, outside `/api`.
+
+- **Auth**: the key-holder credential of `GET /usage`
+  (`verifyGatewayCredential`: `x-api-key` or bearer), plus scope `prices:write`
+  on an **active top-level** key. Unknown, revoked or expired → 401; no scope, a
+  derived key, or an `over_budget` key → 403.
+- **Scopes**: `llm.keys.scopes text[] not null default '{}'` (migration
+  `20261016170000_key_scopes`), `KeyScope` in `shared/types.ts`. Check
+  `keys_scopes_top_only` keeps them off derived rows; derive inserts `'{}'`
+  regardless of the parent.
+- **`GET /internal/prices`** →
+  `{ models: [{ model, provider_slug,
+  upstream_model, long_context, price }] }`
+  for every `MODELS` entry. `upstream_model` = `upstream_model_slug ?? model`
+  (ADR 0002; nothing strips `@variant`, every variant sets its upstream slug).
+  `price` = what ingest charges now (`effectivePrice` → `pickPrice`):
+  `{ kind: "db", id,
+  valid_from, source, note, created_by, ...rates }` or
+  `{ kind: "catalog",
+  cache_derived, ...rates }`, rates being the four
+  `*_cost_per_mtok_usd` plus `per_request_cost_usd`. Read fresh from the DB, not
+  the 30 s cache.
+- **`POST /internal/prices`** body
+  `{ model, input_cost_per_mtok_usd,
+  output_cost_per_mtok_usd, cache_read_cost_per_mtok_usd,
+  cache_write_cost_per_mtok_usd, per_request_cost_usd?, valid_from?, source,
+  note? }`.
+  Validation is the admin page's `parsePriceForm`, moved to `shared/prices.ts`
+  (catalog model, no long-context model, rates 0..999999, source required,
+  `valid_from` ISO, blank = now). Rates are rounded to 6 decimals (the column
+  precision). If the price in effect at `valid_from` (DB row or catalog) already
+  has the same five rates → `200 { unchanged:
+  true, price }`, no row; else
+  `201 { unchanged: false, price }` with `created_by = key:<key label>`. A
+  posted price equal to the catalog is therefore not inserted. The insert clears
+  this machine's price cache, so its ingest uses the row at once; other api
+  machines within 30 s. Two concurrent identical POSTs can both insert
+  (harmless, append-only).
+- Tests: `api/src/tests/internal-prices.test.ts` (scope gate incl. derived,
+  over_budget and revoked; GET shape; insert, unchanged, catalog-equal, second
+  row; validation incl. long-context; ingest uses the posted row past a warm
+  cache). api 45/45, proxy 52/52, admin 5/5, `deno task validate` clean for
+  api/proxy/admin, api and admin images build.
+
+### Minting the kamuhub key (prod)
+
+After the gateway release that carries the migration:
+
+1. Admin app (`https://llm-proxy-admin.fly.dev/keys`): pick the platform org,
+   label `kamuhub-billing-worker`, tick `prices:write`, Create key. Copy the
+   secret (shown once). Or the JSON API with an admin session:
+   `POST /api/keys {"team_id": "...", "label": "kamuhub-billing-worker",
+   "scopes": ["prices:write"]}`.
+2. An existing top-level key can be given the scope by hand instead:
+   `UPDATE llm.keys SET scopes = '{prices:write}' WHERE id = '<key id>' AND
+   key_type = 'top';`
+3. Put the secret in kamuhub's billing-worker env (Doppler → Fly secret), with
+   the api URL `https://kamu-llm-gateway-api.fly.dev`.
+
+The key has `models = ["*"]`, so it can also call models through the proxy; give
+it a small `budget_usd` if that matters.
+
+```bash
+KEY=sk_live_...
+API=https://kamu-llm-gateway-api.fly.dev
+
+curl -s -H "x-api-key: $KEY" $API/internal/prices | jq '.models[0]'
+
+curl -s -X POST -H "x-api-key: $KEY" -H 'content-type: application/json' \
+  $API/internal/prices -d '{
+    "model": "glm-5.3",
+    "input_cost_per_mtok_usd": 0.9058,
+    "output_cost_per_mtok_usd": 3.4292,
+    "cache_read_cost_per_mtok_usd": 0.2288,
+    "cache_write_cost_per_mtok_usd": 0.9058,
+    "source": "cortecs",
+    "note": "daily sync"
+  }'
+# 201 {"unchanged":false,"price":{...}} or 200 {"unchanged":true,"price":{...}}
+# (these are glm-5.3's catalog rates today, so this one answers unchanged)
+```
 
 ## What the next waves must know
 
