@@ -1,5 +1,6 @@
-// Pure pricing math shared by the proxy (prices at request time until ADR 0003
-// wave 2 removes that) and the api poller (prices at ingest, ADR 0003 §2).
+// Pure pricing math shared by the proxy (its catalog estimate on GET /usage),
+// the api poller (prices at ingest, ADR 0003 §2) and the admin Prices page
+// (shows the price ingest resolves, via the same pickPrice).
 // No runtime imports: proxy, api and admin images all copy shared/.
 
 // One request's usage in the four billing buckets (see proxy/src/cost.ts for
@@ -54,4 +55,26 @@ export function computeCostUsd(model: Rates, usage: NormUsage): number {
         usage.cache_read_tokens * readRate +
         usage.cache_write_tokens * writeRate
       ) / 1_000_000;
+}
+
+// One llm.model_prices row as price resolution sees it: every rate set, no
+// long_context tier (the table has no tier columns).
+export interface PriceRow extends Rates {
+  id: string;
+  model: string;
+  valid_from: Date;
+}
+
+// model_prices rows per model, newest valid_from first.
+export type PriceTable<T extends PriceRow = PriceRow> = Map<string, T[]>;
+
+// The DB price row in effect for `model` at `at`, or null (then the catalog
+// price applies). The api uses it at ingest and the admin Prices page uses it
+// to show the current price, so both resolve the same row.
+export function pickPrice<T extends PriceRow>(
+  table: PriceTable<T>,
+  model: string,
+  at: Date,
+): T | null {
+  return table.get(model)?.find((p) => p.valid_from <= at) ?? null;
 }

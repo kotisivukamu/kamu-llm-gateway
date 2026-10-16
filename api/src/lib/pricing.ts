@@ -11,25 +11,24 @@
 // new row therefore applies to rows ingested up to that long after it was
 // added; rows already ingested keep their cost (no recompute on read).
 
-import { computeCostUsd, type NormUsage, type Rates } from "@shared/pricing.ts";
+import {
+  computeCostUsd,
+  type NormUsage,
+  pickPrice,
+  type PriceRow,
+  type PriceTable,
+} from "@shared/pricing.ts";
 import { getModel } from "../../../proxy/src/catalog.ts";
 import { adminSql } from "../config/db.ts";
 
-const PRICE_CACHE_TTL_MS = 30_000;
+export { pickPrice, type PriceRow, type PriceTable };
 
-export interface PriceRow extends Rates {
-  id: string;
-  model: string;
-  valid_from: Date;
-}
+const PRICE_CACHE_TTL_MS = 30_000;
 
 export interface Priced {
   cost_usd: number | null;
   price_id: string | null;
 }
-
-// Rows per model, newest valid_from first.
-export type PriceTable = Map<string, PriceRow[]>;
 
 let cache: { table: PriceTable; loadedAt: number } | null = null;
 
@@ -86,15 +85,6 @@ export async function priceTable(): Promise<PriceTable> {
 // after inserting price rows.
 export function clearPriceCache(): void {
   cache = null;
-}
-
-// The DB price row in effect for `model` at `at`, or null.
-export function pickPrice(
-  table: PriceTable,
-  model: string,
-  at: Date,
-): PriceRow | null {
-  return table.get(model)?.find((p) => p.valid_from <= at) ?? null;
 }
 
 // Cost and price_id for one usage row.
