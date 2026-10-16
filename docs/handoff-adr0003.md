@@ -1,8 +1,8 @@
 # ADR 0003 handoff
 
-Waves 1 (api + database), 2 (proxy) and 3 (cost readers) of 4. Committed
-locally on `main`, not pushed, not released. Wave 3 also touches the builder
-repo.
+Waves 1 (api + database), 2 (proxy), 3 (cost readers) and 4 (admin Prices
+page) of 4. Committed locally on `main`, not pushed, not released. Wave 3 also
+touches the builder repo.
 
 ## Wave 1: done
 
@@ -198,6 +198,38 @@ the same time (make `LLM_GATEWAY_API_URL` required).
   (`model_prices`, else the same catalog), so builds bill identically until a
   `model_prices` row is added.
 
+## Wave 4: done
+
+- **Admin Prices page** (`admin/src/routes/prices.tsx`, nav link "Prices"):
+  every catalog model with its current effective price, marked "DB row" (with
+  source and valid_from) or "catalog"; catalog entries without cache rates
+  show the 0.1x/1.25x fallback marked "derived" (what `computeCostUsd`
+  charges). `/prices?model=<slug>` adds the model's history (newest first,
+  "current" and "scheduled" marked) and an add-a-row form prefilled with the
+  current price. `valid_from` is a UTC datetime-local, blank = `now()` in SQL,
+  future allowed. `created_by = admin:<email>` (as admin key mints). Insert
+  only.
+- **Same resolution as ingest.** `pickPrice`, `PriceRow` and `PriceTable` moved
+  from `api/src/lib/pricing.ts` to `shared/pricing.ts` (api re-exports them;
+  `pickPrice` is generic so the admin row type carries source/note). Both
+  images already copy `shared/` and `proxy/src/catalog.ts`; no Dockerfile
+  change. Both build.
+- **Long-context models are blocked** (claude-haiku-5-5 today): the form is
+  replaced by an explanation and the POST rejects them. A row that exists
+  anyway (inserted by SQL) is still shown and is what ingest uses.
+- Validation (`admin/src/lib/prices.ts` `parsePriceForm`): model in the
+  catalog, four token rates required, all rates 0..999999 (NUMERIC(12,6)),
+  per_request blank = 0, source required.
+- Tests: new `admin/src/tests/prices.test.ts` (5, pure: resolution incl.
+  future rows, long-context flag, form validation); admin `deno task validate`
+  clean. Smoke-tested the real app against the 55441 container (login, add
+  row, future row, blocked long-context, negative rate, page render, rows in
+  DB); test rows removed after. api 40/40, proxy 52/52.
+- **Not done in wave 4**: dropping the proxy's catalog estimate (SQLite
+  `cost_usd` etc., see "Release order"). It waits on the builder-queue env line
+  being live in prod, so it is a follow-up after release, not part of this
+  wave.
+
 ## What the next waves must know
 
 - **Readers (§5)**: done in wave 3 (the builder was the only one). Once the
@@ -211,8 +243,8 @@ the same time (make `LLM_GATEWAY_API_URL` required).
 - A root key's `key_spend` starts at the release that ships wave 2 (earlier
   child spend was never charged to the root), so a budgeted root can run a
   little longer the first time.
-- **Admin Prices page**: insert-only (the grants forbid UPDATE/DELETE for
-  `app_user`/`admin_role`). A new row takes up to 30 s to reach ingest.
+- **Admin Prices page** (built in wave 4): insert-only (the grants forbid
+  UPDATE/DELETE for `app_user`/`admin_role`). A new row takes up to 30 s to reach ingest.
   `valid_from` in the past only affects rows ingested after it lands; it never
   reprices stored rows.
 
