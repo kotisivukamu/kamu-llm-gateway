@@ -355,17 +355,17 @@ export const MODELS: Record<string, ModelEntry> = {
   // keep the assumed defaults relative to input.
   "kimi-k3": {
     provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 2.96,
-    output_cost_per_mtok_usd: 14.81,
+    input_cost_per_mtok_usd: 3.1115,
+    output_cost_per_mtok_usd: 15.5563,
     cache_read_cost_per_mtok_usd: 0.3,
-    cache_write_cost_per_mtok_usd: 2.96,
+    cache_write_cost_per_mtok_usd: 3.1115,
   },
   "kimi-k2.7-code": {
     provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 0.74,
-    output_cost_per_mtok_usd: 3.46,
-    cache_read_cost_per_mtok_usd: 0.2,
-    cache_write_cost_per_mtok_usd: 0.74,
+    input_cost_per_mtok_usd: 0.6805,
+    output_cost_per_mtok_usd: 3.4223,
+    cache_read_cost_per_mtok_usd: 0.1872,
+    cache_write_cost_per_mtok_usd: 0.6805,
   },
   "kimi-k2.7-code-highspeed": {
     provider_slug: "moonshot",
@@ -494,10 +494,10 @@ export const MODELS: Record<string, ModelEntry> = {
   // completion_tokens and are priced at the output rate.
   "qwen3.8-27b": {
     provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 0.3466,
-    output_cost_per_mtok_usd: 2.5419,
-    cache_read_cost_per_mtok_usd: 0.1155,
-    cache_write_cost_per_mtok_usd: 0.3466,
+    input_cost_per_mtok_usd: 0.104,
+    output_cost_per_mtok_usd: 0.4148,
+    cache_read_cost_per_mtok_usd: 0.0416,
+    cache_write_cost_per_mtok_usd: 0.104,
   },
   "qwen3.8-2.4t-a95b": {
     provider_slug: "cortecs",
@@ -519,17 +519,17 @@ export const MODELS: Record<string, ModelEntry> = {
   // (Moved from opencode-zen 2026-08-31.)
   "glm-5.3": {
     provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 1.8151,
-    output_cost_per_mtok_usd: 4.6667,
-    cache_read_cost_per_mtok_usd: 0.4541,
-    cache_write_cost_per_mtok_usd: 1.8151,
+    input_cost_per_mtok_usd: 0.9058,
+    output_cost_per_mtok_usd: 3.4292,
+    cache_read_cost_per_mtok_usd: 0.2288,
+    cache_write_cost_per_mtok_usd: 0.9058,
   },
   "glm-5.3-flash": {
     provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 0.208,
-    output_cost_per_mtok_usd: 0.5188,
-    cache_read_cost_per_mtok_usd: 0.052,
-    cache_write_cost_per_mtok_usd: 0.208,
+    input_cost_per_mtok_usd: 0.104,
+    output_cost_per_mtok_usd: 0.3628,
+    cache_read_cost_per_mtok_usd: 0.0185,
+    cache_write_cost_per_mtok_usd: 0.104,
   },
   // DeepSeek V4.1 Flash (added 2026-10-09, replaces native deepseek-v4-flash).
   // Reasoning + tools + image input, 1M context. Cortecs lists five providers
@@ -549,24 +549,24 @@ export const MODELS: Record<string, ModelEntry> = {
   },
   "glm-5.2": {
     provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 1.24,
-    output_cost_per_mtok_usd: 4.36,
-    cache_read_cost_per_mtok_usd: 0.124,
-    cache_write_cost_per_mtok_usd: 1.24,
+    input_cost_per_mtok_usd: 0.9336,
+    output_cost_per_mtok_usd: 3.3599,
+    cache_read_cost_per_mtok_usd: 0.1964,
+    cache_write_cost_per_mtok_usd: 0.9336,
   },
   "glm-5.1": {
     provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 1.44,
-    output_cost_per_mtok_usd: 4.51,
+    input_cost_per_mtok_usd: 1.435,
+    output_cost_per_mtok_usd: 4.5095,
     cache_read_cost_per_mtok_usd: 0.144,
-    cache_write_cost_per_mtok_usd: 1.44,
+    cache_write_cost_per_mtok_usd: 1.435,
   },
   "minimax-m3": {
     provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 0.41,
-    output_cost_per_mtok_usd: 2.05,
-    cache_read_cost_per_mtok_usd: 0.041,
-    cache_write_cost_per_mtok_usd: 0.41,
+    input_cost_per_mtok_usd: 0.3108,
+    output_cost_per_mtok_usd: 1.2444,
+    cache_read_cost_per_mtok_usd: 0.0624,
+    cache_write_cost_per_mtok_usd: 0.3108,
   },
 
   // GLM-5 and MiniMax-M2.7 (older generations) moved from OpenCode Zen to
@@ -605,18 +605,18 @@ export const MODELS: Record<string, ModelEntry> = {
   "kimi-k2.6@cortecs": {
     provider_slug: "cortecs",
     upstream_model_slug: "kimi-k2.6",
-    input_cost_per_mtok_usd: 0.535,
-    output_cost_per_mtok_usd: 2.9752,
-    cache_read_cost_per_mtok_usd: 0.119,
-    cache_write_cost_per_mtok_usd: 0.535,
+    input_cost_per_mtok_usd: 0.4922,
+    output_cost_per_mtok_usd: 3.0803,
+    cache_read_cost_per_mtok_usd: 0.104,
+    cache_write_cost_per_mtok_usd: 0.4922,
   },
   "deepseek-v4-pro@cortecs": {
     provider_slug: "cortecs",
     upstream_model_slug: "deepseek-v4-pro",
-    input_cost_per_mtok_usd: 1.7943,
-    output_cost_per_mtok_usd: 3.5887,
-    cache_read_cost_per_mtok_usd: 0.4483,
-    cache_write_cost_per_mtok_usd: 1.7943,
+    input_cost_per_mtok_usd: 1.7631,
+    output_cost_per_mtok_usd: 3.5263,
+    cache_read_cost_per_mtok_usd: 0.156,
+    cache_write_cost_per_mtok_usd: 1.7631,
   },
   // @tensorx: USD/token from tensorx GET /v1/model/info (2026-09-23) x 1e6;
   // cache write = input (tensorx publishes none).
