@@ -27,6 +27,10 @@
 // keys with 402. Only rows this poll actually inserted count, so a re-poll of
 // the overlap never charges a row twice.
 //
+// Readers that need every row so far (the key-holder GET /usage in
+// routes/usage.ts) call ingestNow(), which waits for a pass that started
+// after the call instead of reading what the last tick left.
+//
 // Adapted from the legacy graphile-worker task
 // (kotisivukamu/worker/src/llm_usage/poll.ts). This repo has no job queue, so
 // a setInterval loop in the api process does the same job.
@@ -259,10 +263,20 @@ async function chargeSpend(
   }
 }
 
-// One tick: every proxy machine. A failing machine is logged and skipped;
+// One pass over every proxy machine. A failing machine is logged and skipped;
 // the others still get polled, and it catches up from its volume later.
-export async function pollAll(): Promise<void> {
-  for (const s of await satellites()) {
+// Returns the machines that failed ("discovery" when the machine list itself
+// could not be read), so a reader can tell a complete pass from a partial one.
+export async function pollAll(): Promise<string[]> {
+  let targets: Satellite[];
+  try {
+    targets = await satellites();
+  } catch (err) {
+    log.error("usage_poll: discovery failed", { err: String(err) });
+    return ["discovery"];
+  }
+  const failed: string[] = [];
+  for (const s of targets) {
     try {
       await pollOnce(s.origin, withOverlap(await newestStored(s.machineId)));
     } catch (err) {
@@ -270,8 +284,41 @@ export async function pollAll(): Promise<void> {
         origin: s.origin,
         err: String(err),
       });
+      failed.push(s.machineId ?? s.origin);
     }
   }
+  return failed;
+}
+
+// The pass in flight on this api machine, and the one queued behind it.
+let running: Promise<string[]> | null = null;
+let queued: Promise<string[]> | null = null;
+
+function start(): Promise<string[]> {
+  const pass = pollAll().finally(() => {
+    if (running === pass) running = null;
+  });
+  running = pass;
+  return pass;
+}
+
+/**
+ * An ingest barrier (ADR 0003 §5): resolves after a full pass over every
+ * proxy machine that STARTED after this call, so every usage row a proxy
+ * wrote before the call is in llm.usage_log once it resolves (if it returns
+ * no failed machines). Callers that arrive while a pass runs share one queued
+ * pass, so a burst of readers costs at most one extra pass, and the interval
+ * loop and readers never poll concurrently on one api machine. Another api
+ * machine polling the same rows at the same time is fine: inserts dedupe on
+ * usage_id and a conflicting insert waits for the other's commit.
+ */
+export function ingestNow(): Promise<string[]> {
+  if (!running) return start();
+  queued ??= running.then(() => {
+    queued = null;
+    return start();
+  });
+  return queued;
 }
 
 /**
@@ -279,21 +326,15 @@ export async function pollAll(): Promise<void> {
  * buffer into llm.usage_log on a fixed interval. Returns a stop function.
  */
 export function startUsagePoller(): () => void {
-  let polling = false;
   log.info("usage_poll: starting", { proxy: env.LLM_PROXY_URL });
 
-  const timer = setInterval(async () => {
-    // Skip overlapping runs if a previous poll is still in flight (a slow
-    // upstream or a big backlog shouldn't stack concurrent polls).
-    if (polling) return;
-    polling = true;
-    try {
-      await pollAll();
-    } catch (err) {
+  // A tick while a pass is in flight is skipped (a slow upstream or a big
+  // backlog shouldn't stack passes); readers queue through ingestNow.
+  const timer = setInterval(() => {
+    if (running) return;
+    start().catch((err) => {
       log.error("usage_poll: run failed", { err: String(err) });
-    } finally {
-      polling = false;
-    }
+    });
   }, env.USAGE_POLL_INTERVAL_MS);
 
   return () => clearInterval(timer);

@@ -19,7 +19,10 @@ builder-queue, the kamuhub agent) via `POST /api/keys/derive`.
   signed `X-Kamuhub-Authz` platform context (no browser login of its own).
   Postgres **RLS** scopes data by team/key; the API connects as `app_user`
   (BYPASSRLS) and runs authenticated requests via `SET LOCAL ROLE authenticated`
-  + `app.current_user_id` (see `api/src/config/db.ts`).
+  + `app.current_user_id` (see `api/src/config/db.ts`). One route sits outside
+  that: `GET /usage` (no `/api` prefix) takes a gateway key itself and serves
+  that key's priced usage rows with the proxy's `/usage` contract, for cost
+  readers such as the builder (ADR 0003 §5).
 - `shared/` — pure types shared across the api and (future) satellite.
 - `database/migrations/` — timestamped `.up.sql`/`.down.sql` pairs applied with
   the Deno runner.

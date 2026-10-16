@@ -2,7 +2,7 @@ import "./env.ts";
 import { HTTPException } from "@hono/hono/http-exception";
 import { createRouter } from "../../lib/openapi.ts";
 import { derive, keys } from "../../routes/keys.ts";
-import { usage } from "../../routes/usage.ts";
+import { keyUsage, usage } from "../../routes/usage.ts";
 
 // Builds the same route wiring as main.ts, minus the process-level side
 // effects (Deno.serve, the usage poller, the DB role probe log) that make
@@ -10,6 +10,7 @@ import { usage } from "../../routes/usage.ts";
 // on the result, or use `testRequest` below.
 export function buildTestApp() {
   const app = createRouter();
+  app.route("/", keyUsage);
   app.route("/api", derive);
   app.route("/api", keys);
   app.route("/api", usage);

@@ -1,5 +1,6 @@
-import { SignJWT } from "jose";
-import { getSigningKey, signingKeyId } from "./ed25519.ts";
+import { jwtVerify, SignJWT } from "jose";
+import { adminSql } from "../config/db.ts";
+import { getSigningKey, getVerifyKey, signingKeyId } from "./ed25519.ts";
 
 // Key material helpers for the two credential shapes (ADR 0001 §3).
 //
@@ -89,4 +90,61 @@ export async function signSubKeyJwt(
     .setExpirationTime(expEpochSeconds)
     .sign(key);
   return jwt;
+}
+
+/** The presented gateway credential: `x-api-key`, else the bearer token. */
+export function extractCredential(headers: Headers): string {
+  return headers.get("x-api-key") ??
+    (headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+}
+
+/** Whose usage a verified gateway credential may read. */
+export interface UsageScope {
+  key_id: string;
+  key_type: "top" | "derived";
+}
+
+/**
+ * Verifies a gateway credential the way the proxy does (proxy/src/auth.ts):
+ * a top-level `sk_live_` key by its hash, a derived sub-key JWT by its
+ * Ed25519 signature and then its row (jti = row PK). The row must be active
+ * or over_budget and unexpired; a derived key's root must be too. Over-budget
+ * keys may still read their usage, as on the proxy. One DB read, no cache:
+ * this path serves usage reads, not the LLM hot path. Null = 401.
+ */
+export async function verifyGatewayCredential(
+  presented: string,
+): Promise<UsageScope | null> {
+  let where: { hash: string } | { id: string };
+  if (presented.startsWith(PREFIX_LIVE)) {
+    where = { hash: await hashKey(presented) };
+  } else if (presented.split(".").length === 3) {
+    try {
+      const { payload } = await jwtVerify(presented, await getVerifyKey(), {
+        algorithms: ["EdDSA"],
+      });
+      if (typeof payload.jti !== "string") return null;
+      where = { id: payload.jti };
+    } catch {
+      return null;
+    }
+  } else {
+    return null;
+  }
+
+  const [row] = await adminSql<UsageScope[]>`
+    SELECT k.id::text AS key_id, k.key_type
+      FROM llm.keys k
+      JOIN llm.keys r ON r.id = COALESCE(k.root_key_id, k.id)
+     WHERE ${
+    "hash" in where
+      ? adminSql`k.key_hash = ${where.hash} AND k.key_type = 'top'`
+      : adminSql`k.id = ${where.id}::uuid AND k.key_type = 'derived'`
+  }
+       AND k.status IN ('active', 'over_budget')
+       AND (k.expires_at IS NULL OR k.expires_at > now())
+       AND r.status IN ('active', 'over_budget')
+       AND (r.expires_at IS NULL OR r.expires_at > now())
+  `;
+  return row ?? null;
 }

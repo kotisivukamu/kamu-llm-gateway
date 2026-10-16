@@ -3,7 +3,7 @@ import { assertAlmostEquals, assertEquals, assertRejects } from "@std/assert";
 import { computeCostUsd } from "@shared/pricing.ts";
 import { MODELS } from "../../../proxy/src/catalog.ts";
 import { clearPriceCache } from "../lib/pricing.ts";
-import { pollAll, pollOnce } from "../lib/usage-poller.ts";
+import { ingestNow, pollAll, pollOnce } from "../lib/usage-poller.ts";
 import { adminSql, resetDb, seedKey, seedTeam } from "./support/db.ts";
 
 // Regression for commit f840311 ("correct usage-poller INSERT/SELECT column
@@ -228,6 +228,37 @@ Deno.test("pollAll: asks from the newest stored usage_id minus 10 s", {
       ),
       true,
     );
+  } finally {
+    restoreFetch();
+  }
+});
+
+Deno.test("ingestNow: readers during a pass share one pass after it", {
+  sanitizeOps: false,
+  sanitizeResources: false,
+}, async () => {
+  await resetDb();
+  let passes = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => release = r);
+  globalThis.fetch = (async () => {
+    passes++;
+    if (passes === 1) await gate;
+    return Response.json({ rows: [] });
+  }) as typeof fetch;
+  try {
+    const first = ingestNow();
+    // These arrive while the first pass is in flight: it may have missed
+    // their rows, so they wait for a pass that starts after it.
+    const second = ingestNow();
+    const third = ingestNow();
+    assertEquals(second === third, true);
+    await new Promise((r) => setTimeout(r, 10));
+    assertEquals(passes, 1);
+    release();
+    assertEquals(await first, []);
+    assertEquals(await second, []);
+    assertEquals(passes, 2);
   } finally {
     restoreFetch();
   }

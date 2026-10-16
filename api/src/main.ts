@@ -7,7 +7,7 @@ import { createRouter } from "./lib/openapi.ts";
 import { requestLogger } from "./middleware/request-logger.ts";
 import { derive, keys } from "./routes/keys.ts";
 import { teams } from "./routes/teams.ts";
-import { usage } from "./routes/usage.ts";
+import { keyUsage, usage } from "./routes/usage.ts";
 import { startUsagePoller } from "./lib/usage-poller.ts";
 
 sql<{ role: string; db: string }[]>`
@@ -43,6 +43,11 @@ app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
 });
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// Key-holder usage reads (ADR 0003 §5): authenticated by the gateway key
+// itself, not the BFF context, so it lives outside /api, at the same path as
+// the proxy's GET /usage it replaces for cost readers.
+app.route("/", keyUsage);
 
 // Derive is a SEPARATE auth path: it authenticates with the PARENT KEY
 // (sk_live_…), NOT the BFF context (ADR 0001 §9/§7). Mount it BEFORE the

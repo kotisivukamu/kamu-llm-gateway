@@ -32,9 +32,11 @@
 //           - top-level `sk_live_` key: rows whose root_key_id = its own id,
 //             i.e. its own rows and every derived sub-key's rows;
 //           - derived sub-key JWT: only rows whose key_id = its own id.
-//         Sees those rows on EVERY machine. This lets a key holder (the
-//         builder's per-job key, studio's key) read its own spend in near real
-//         time. Filters only ever narrow this scope, never widen it.
+//         Sees those rows on EVERY machine. This lets a key holder read its
+//         own usage in near real time. Filters only ever narrow this scope,
+//         never widen it. Cost readers use the api's GET /usage instead (same
+//         contract, ingest-priced cost; ADR 0003 §5): cost_usd here is only
+//         the catalog estimate.
 //   Response 200:
 //     {
 //       "rows": [
