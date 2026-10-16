@@ -155,6 +155,9 @@ across the whole platform.
 shape, duplicated in `src/lib/keys.ts` rather than imported — see that file's
 header comment for why). Revoke runs the identical cascade query
 (`status='revoked' WHERE id = $1 OR root_key_id = $1`) as `api/`'s revoke route.
+Mint takes optional scopes (`shared/types.ts` `KeyScope`; a checkbox per scope
+on the form, `scopes: [...]` on the JSON API), set at mint time only. Today the
+one scope is `prices:write` (the api's `/internal/prices`).
 
 ### Feature 4 — prices (ADR 0003 §3)
 
@@ -166,7 +169,8 @@ and an add-a-row form prefilled with its current price. Rows are insert-only (no
 edit/delete; the table's grants forbid both). Models with a `long_context` tier
 in the catalog are blocked: `model_prices` has no tier columns, so a row would
 bill every request at the base rate. Pure logic and its tests:
-`src/lib/prices.ts`, `src/tests/prices.test.ts` (`deno task test`).
+`../shared/prices.ts` (shared with the api's internal price API),
+`src/tests/prices.test.ts` (`deno task test`).
 
 ## Testing performed (2026-08-25, against a real local Postgres)
 
