@@ -381,17 +381,6 @@ export const MODELS: Record<string, ModelEntry> = {
     cache_read_cost_per_mtok_usd: 0.095,
     cache_write_cost_per_mtok_usd: 0.95,
   },
-  // kimi-k2.5 moved to cortecs 2026-09-23: Moonshot no longer serves it
-  // (404 resource_not_found; absent from GET /v1/models) and moonshot-v1-32k
-  // was dropped for the same reason. Cortecs EUR 0.444 in / 2.485 out / cache
-  // read 0.111 at 1.1554 USD/EUR; cache write = input (none published).
-  "kimi-k2.5": {
-    provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 0.513,
-    output_cost_per_mtok_usd: 2.8712,
-    cache_read_cost_per_mtok_usd: 0.1282,
-    cache_write_cost_per_mtok_usd: 0.513,
-  },
 
   // --- DeepSeek (native, api.deepseek.com) --------------------------------
   // deepseek-chat / deepseek-reasoner are the legacy aliases of
@@ -567,26 +556,6 @@ export const MODELS: Record<string, ModelEntry> = {
     output_cost_per_mtok_usd: 1.2444,
     cache_read_cost_per_mtok_usd: 0.0624,
     cache_write_cost_per_mtok_usd: 0.3108,
-  },
-
-  // GLM-5 and MiniMax-M2.7 (older generations) moved from OpenCode Zen to
-  // cortecs on 2026-09-09. Rates are cortecs' EUR/Mtok (GET /v1/models:
-  // glm-5 0.887/2.84 cache-read 0.222; minimax-m2.7 0.6/2.4, no cache rate
-  // published so the ASSUMED defaults apply: read = 0.1x, write = 1.0x)
-  // converted at 1.1554 USD/EUR like the rest of the cortecs rows.
-  "glm-5": {
-    provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 1.0248,
-    output_cost_per_mtok_usd: 3.2813,
-    cache_read_cost_per_mtok_usd: 0.2565,
-    cache_write_cost_per_mtok_usd: 1.0248,
-  },
-  "minimax-m2.7": {
-    provider_slug: "cortecs",
-    input_cost_per_mtok_usd: 0.6932,
-    output_cost_per_mtok_usd: 2.773,
-    cache_read_cost_per_mtok_usd: 0.0693,
-    cache_write_cost_per_mtok_usd: 0.6932,
   },
 
   // --- Provider-pinned variants (`<slug>@<provider>`, ADR 0002) -----------
