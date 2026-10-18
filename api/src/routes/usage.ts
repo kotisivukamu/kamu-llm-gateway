@@ -191,7 +191,7 @@ keyUsage.get("/usage", async (c) => {
 
   // Bounded: a proxy machine that hangs (pollOnce allows 30 s a page) must
   // not hold the read past a caller's timeout; the answer is then partial.
-  let timer: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const failed = await Promise.race([
     ingestNow(),
     new Promise<string[]>((r) => {
