@@ -1,6 +1,7 @@
 import { type Context, Hono } from "@hono/hono";
 import { MODELS, PROVIDERS } from "../catalog.ts";
 import { extractCredential, verifyCredential } from "../auth.ts";
+import { gateway } from "../gateway-db.ts";
 
 // Read-only view of the compiled-in catalog.
 //
@@ -26,7 +27,83 @@ import { extractCredential, verifyCredential } from "../auth.ts";
 // opaque key or Ed25519 sub-key JWT). The catalog is not secret exactly, but
 // our per-model cost basis is commercially sensitive, so it does not go out
 // unauthenticated.
+//
+// PRICES are the ones ingest bills with, not the compiled-in ones: the
+// newest llm.model_prices row in effect (the daily provider price sync
+// appends there), else the catalog price. Serving the source-file prices
+// alone left kotisivukamu syncing a week-old glm-5.3 rate (0.9058 vs 0.5303
+// input) after cortecs cut prices on 2026-10-20. long_context stays the
+// catalog's; model_prices carries the base rates only.
 export const catalog = new Hono();
+
+export interface DbRates {
+  input_cost_per_mtok_usd: number;
+  output_cost_per_mtok_usd: number;
+  cache_read_cost_per_mtok_usd: number;
+  cache_write_cost_per_mtok_usd: number;
+  per_request_cost_usd: number;
+}
+
+// The catalog view with each model's DB price, when it has one, laid over
+// the compiled-in price. Pure, so the overlay is tested without a database.
+export function catalogView(prices: Map<string, DbRates>) {
+  return {
+    providers: Object.keys(PROVIDERS).sort().map((slug) => ({ slug })),
+    models: Object.entries(MODELS)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([slug, m]) => {
+        const db = prices.get(slug);
+        return {
+          slug,
+          provider_slug: m.provider_slug,
+          input_cost_per_mtok_usd: db?.input_cost_per_mtok_usd ??
+            m.input_cost_per_mtok_usd,
+          output_cost_per_mtok_usd: db?.output_cost_per_mtok_usd ??
+            m.output_cost_per_mtok_usd,
+          cache_read_cost_per_mtok_usd: db?.cache_read_cost_per_mtok_usd ??
+            m.cache_read_cost_per_mtok_usd ?? null,
+          cache_write_cost_per_mtok_usd: db?.cache_write_cost_per_mtok_usd ??
+            m.cache_write_cost_per_mtok_usd ?? null,
+          per_request_cost_usd: db?.per_request_cost_usd ??
+            m.per_request_cost_usd ?? null,
+          long_context: m.long_context ?? null,
+        };
+      }),
+  };
+}
+
+// The model_prices row in effect now, per model. A DB error fails the
+// request rather than falling back to the catalog: a caller syncing prices
+// from here would otherwise write stale prices without knowing.
+async function currentDbPrices(): Promise<Map<string, DbRates>> {
+  const rows = await gateway<
+    {
+      model: string;
+      input: string;
+      output: string;
+      cache_read: string;
+      cache_write: string;
+      per_request: string;
+    }[]
+  >`
+    SELECT DISTINCT ON (model) model,
+           input_cost_per_mtok_usd       AS input,
+           output_cost_per_mtok_usd      AS output,
+           cache_read_cost_per_mtok_usd  AS cache_read,
+           cache_write_cost_per_mtok_usd AS cache_write,
+           per_request_cost_usd          AS per_request
+      FROM model_prices
+     WHERE valid_from <= now()
+     ORDER BY model, valid_from DESC
+  `;
+  return new Map(rows.map((r) => [r.model, {
+    input_cost_per_mtok_usd: Number(r.input),
+    output_cost_per_mtok_usd: Number(r.output),
+    cache_read_cost_per_mtok_usd: Number(r.cache_read),
+    cache_write_cost_per_mtok_usd: Number(r.cache_write),
+    per_request_cost_usd: Number(r.per_request),
+  }]));
+}
 
 catalog.get("/", async (c) => {
   const token = await verifyCredential(extractCredential(c.req.raw.headers));
@@ -34,21 +111,7 @@ catalog.get("/", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  return c.json({
-    providers: Object.keys(PROVIDERS).sort().map((slug) => ({ slug })),
-    models: Object.entries(MODELS)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([slug, m]) => ({
-        slug,
-        provider_slug: m.provider_slug,
-        input_cost_per_mtok_usd: m.input_cost_per_mtok_usd,
-        output_cost_per_mtok_usd: m.output_cost_per_mtok_usd,
-        cache_read_cost_per_mtok_usd: m.cache_read_cost_per_mtok_usd ?? null,
-        cache_write_cost_per_mtok_usd: m.cache_write_cost_per_mtok_usd ?? null,
-        per_request_cost_usd: m.per_request_cost_usd ?? null,
-        long_context: m.long_context ?? null,
-      })),
-  });
+  return c.json(catalogView(await currentDbPrices()));
 });
 
 // GET /llm/catalog — the same catalog in pi's models.json shape.
