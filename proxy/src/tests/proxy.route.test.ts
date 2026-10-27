@@ -397,6 +397,10 @@ Deno.test({
         "Bearer jev-test-upstream",
       );
       assertEquals(
+        calls[0].headers.get("typesafe-danger-zone-images"),
+        null,
+      );
+      assertEquals(
         JSON.parse(new TextDecoder().decode(calls[0].body)),
         sent,
       );
@@ -430,6 +434,159 @@ Deno.test({
       assertEquals((await res.json()).error, "path_not_allowed");
       assertEquals(calls.length, 0);
     });
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "jev: a caller can't switch images on through the regular route",
+  fn: async () => {
+    const key = await seedKey(["jev-latest"]);
+    Deno.env.set("JEV_API_KEY", "jev-test-upstream");
+    await withUpstream({}, async (calls) => {
+      const res = await app.request("/llm/jev/v1/systemone", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.secret}`,
+          "content-type": "application/json",
+          "typesafe-danger-zone-images": "true",
+        },
+        body: JSON.stringify({ model: "jev-latest" }),
+      });
+      assertEquals(res.status, 200);
+      assertEquals(
+        calls[0].headers.get("typesafe-danger-zone-images"),
+        null,
+      );
+    });
+  },
+  ...opts,
+});
+
+const IMAGE_QUESTION = {
+  state: { img: "ref-1" },
+  questions: {
+    q: { type: "noul", instructions: "Is `img` mostly one colour?" },
+  },
+};
+
+Deno.test({
+  name:
+    "jev-images: sends the danger-zone header and the base slug, logs the -images slug",
+  fn: async () => {
+    const key = await seedKey(["jev-latest-images"]);
+    Deno.env.set("JEV_API_KEY", "jev-test-upstream");
+    const sent = {
+      model: "jev-latest-images",
+      ...IMAGE_QUESTION,
+      assets: {
+        "ref-1": { type: "image", format: "png", data_base64: "iVBORw0KGgo=" },
+      },
+    };
+    const reply = {
+      answers: { q: { answer: "yes" } },
+      usage: { input_tokens: 300, output_tokens: 2 },
+    };
+    await withUpstream(reply, async (calls) => {
+      const res = await app.request("/llm/jev-images/v1/systemone", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.secret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(sent),
+      });
+      assertEquals(res.status, 200);
+      assertEquals(await res.json(), reply);
+      assertEquals(calls[0].url, "https://api.typesafe.ai/v1/systemone");
+      assertEquals(
+        calls[0].headers.get("authorization"),
+        "Bearer jev-test-upstream",
+      );
+      assertEquals(calls[0].headers.get("typesafe-danger-zone-images"), "true");
+      assertEquals(
+        JSON.parse(new TextDecoder().decode(calls[0].body)),
+        { ...sent, model: "jev-latest" },
+      );
+    });
+    const [row] = await usageRows(key.id, 1);
+    assertEquals(row.model, "jev-latest-images");
+    assertAlmostEquals(row.cost_usd!, 300 * 0.042 / 1e6, 1e-15);
+    assertEquals(
+      stmt(`SELECT provider_slug FROM usage_log WHERE key_id = ?`).get(key.id),
+      { provider_slug: "jev-images" },
+    );
+  },
+  ...opts,
+});
+
+Deno.test({
+  name: "jev-images: refuses base Jev slugs and a missing model",
+  fn: async () => {
+    const key = await seedKey(["*"]);
+    Deno.env.set("JEV_API_KEY", "jev-test-upstream");
+    await withUpstream({}, async (calls) => {
+      for (const body of [{ model: "jev-latest" }, {}]) {
+        const res = await app.request("/llm/jev-images/v1/systemone", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${key.secret}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ ...body, ...IMAGE_QUESTION }),
+        });
+        assertEquals(res.status, 400);
+        assertEquals((await res.json()).error, "model_not_on_provider");
+      }
+      assertEquals(calls.length, 0);
+    });
+  },
+  ...opts,
+});
+
+Deno.test({
+  name:
+    "jev-images: multipart rewrites the model in the request part, keeps the image part",
+  fn: async () => {
+    const key = await seedKey(["jev-1.14.0-images"]);
+    Deno.env.set("JEV_API_KEY", "jev-test-upstream");
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const form = new FormData();
+    form.append(
+      "request",
+      new Blob([JSON.stringify({
+        model: "jev-1.14.0-images",
+        ...IMAGE_QUESTION,
+        assets: { "ref-1": { type: "image", part: "shot" } },
+      })], { type: "application/json" }),
+    );
+    form.append("shot", new File([png], "shot.png", { type: "image/png" }));
+    await withUpstream({ answers: {} }, async (calls) => {
+      const res = await app.request("/llm/jev-images/v1/systemone", {
+        method: "POST",
+        headers: { authorization: `Bearer ${key.secret}` },
+        body: form,
+      });
+      assertEquals(res.status, 200);
+      assertEquals(calls[0].headers.get("typesafe-danger-zone-images"), "true");
+      const upstream = await new Request("http://x.invalid", {
+        method: "POST",
+        headers: { "content-type": calls[0].headers.get("content-type")! },
+        body: calls[0].body,
+      }).formData();
+      const request = JSON.parse(
+        await (upstream.get("request") as File).text(),
+      );
+      assertEquals(request.model, "jev-1.14.0");
+      assertEquals(request.assets, {
+        "ref-1": { type: "image", part: "shot" },
+      });
+      const shot = upstream.get("shot") as File;
+      assertEquals(shot.type, "image/png");
+      assertEquals(new Uint8Array(await shot.arrayBuffer()), png);
+    });
+    const [row] = await usageRows(key.id, 1);
+    assertEquals(row.model, "jev-1.14.0-images");
   },
   ...opts,
 });

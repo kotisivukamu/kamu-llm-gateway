@@ -29,6 +29,12 @@ export interface ProviderEntry {
   // callers keep sending /v1/chat/completions (and the allowlist is checked
   // against that), the upstream gets the path without the prefix.
   strip_path_prefix?: string;
+  // Headers always set on the upstream request, after the caller's forwarded
+  // ones. For a variant route that turns on upstream behaviour the base
+  // provider must never get (jev-images). A provider with fixed headers only
+  // serves its own model slugs (proxy.ts enforces it), so its usage rows can't
+  // be filed under another provider's model.
+  upstream_headers?: Record<string, string>;
 }
 
 export interface ModelEntry {
@@ -178,6 +184,19 @@ export const PROVIDERS: Record<string, ProviderEntry> = {
     auth_style: "bearer",
     api_key_env_var: "JEV_API_KEY",
     allowed_paths: JEV_PATHS,
+  },
+  // Jev with image input. Jev 1.13+ reads images (base64 in a top-level
+  // `assets` map, or multipart parts) only when the request carries
+  // TypeSafe-Danger-Zone-Images: true; TypeSafe calls image input
+  // experimental. It is a separate route with its own `-images` model slugs
+  // so production `jev` callers never send that header and image usage shows
+  // up separately in the ledger. Same upstream, key and price as jev.
+  "jev-images": {
+    base_url: "https://api.typesafe.ai",
+    auth_style: "bearer",
+    api_key_env_var: "JEV_API_KEY",
+    allowed_paths: JEV_PATHS,
+    upstream_headers: { "TypeSafe-Danger-Zone-Images": "true" },
   },
 };
 
@@ -707,6 +726,22 @@ export const MODELS: Record<string, ModelEntry> = {
       slug,
       {
         provider_slug: "jev",
+        input_cost_per_mtok_usd: 0.042,
+        output_cost_per_mtok_usd: 0,
+        cache_read_cost_per_mtok_usd: 0,
+        cache_write_cost_per_mtok_usd: 0,
+        per_request_cost_usd: 0,
+      },
+    ]),
+  ),
+  // Image-enabled twins for the jev-images route: `jev-latest-images` is
+  // upstream `jev-latest`, and so on. Priced like their base slugs.
+  ...Object.fromEntries(
+    ["jev-latest", "jev-preview", "jev-1.13.0", "jev-1.14.0"].map((slug) => [
+      `${slug}-images`,
+      {
+        provider_slug: "jev-images",
+        upstream_model_slug: slug,
         input_cost_per_mtok_usd: 0.042,
         output_cost_per_mtok_usd: 0,
         cache_read_cost_per_mtok_usd: 0,

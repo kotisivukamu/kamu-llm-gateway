@@ -64,6 +64,16 @@ price is filled in (TODO in the catalog). To enable it in prod, add
 `fly secrets set JEV_API_KEY=... -a kamu-llm-gateway-proxy`), which restarts the
 machines with the key.
 
+**Jev with images** is a separate route, `POST /llm/jev-images/v1/systemone`,
+that always sends `TypeSafe-Danger-Zone-Images: true` upstream (TypeSafe calls
+image input experimental). It takes only the `-images` slugs
+(`jev-latest-images`, `jev-preview-images`, `jev-1.13.0-images`,
+`jev-1.14.0-images`), forwarded as the base slug and logged under the `-images`
+one, so the key needs that slug granted. Images go in a top-level `assets` map
+(base64) or as multipart parts next to a `request` JSON part; bodies up to
+32 MiB. The regular `jev` route never sends the header, so it keeps rejecting
+images.
+
 ## Identity & org model
 
 - KamuID owns identity, orgs, and membership. A KamuID **org** projects into a

@@ -26,10 +26,10 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
-// Upper bound for a buffered multipart body. OpenAI caps transcription
-// uploads at 25 MB per file; the extra MiB covers the multipart envelope and
-// the small text fields (model, language, prompt) riding next to the file.
-export const MAX_MULTIPART_BYTES = 26 * 1024 * 1024;
+// Upper bound for a buffered multipart body: Jev's 32 MiB request limit
+// (images as file parts), which also covers OpenAI's 25 MB transcription
+// uploads plus their envelope. JSON bodies are not capped here.
+export const MAX_MULTIPART_BYTES = 32 * 1024 * 1024;
 
 // Read a request body into memory, giving up (null) as soon as it exceeds
 // `max` so an oversized upload is never fully buffered. Content-length is not
@@ -157,12 +157,13 @@ proxy.all("/:provider_slug/*", async (c) => {
       "multipart/form-data",
     );
 
-    // Multipart (audio transcription) carries `model` as a form field. Buffer
-    // the whole form, read the field for authorization, and forward the
-    // original bytes untouched (same boundary, same file part) — re-encoding
-    // the FormData would mint a new boundary and buys nothing. Unlike the JSON
-    // path, an unparseable form is refused: passing it through would skip the
-    // model check entirely.
+    // Multipart carries `model` either as a form field (audio transcription)
+    // or inside a JSON part named `request` (Jev with image parts). Buffer the
+    // whole form, read the model for authorization, and forward the original
+    // bytes untouched (same boundary, same file parts) unless the model needs
+    // an upstream rename; only then is the form re-encoded with a rewritten
+    // `request` part. Unlike the JSON path, an unparseable form is refused:
+    // passing it through would skip the model check entirely.
     if (isMultipart) {
       const declared = Number(c.req.header("content-length") ?? "0");
       const bytes = declared > MAX_MULTIPART_BYTES || !c.req.raw.body
@@ -190,7 +191,25 @@ proxy.all("/:provider_slug/*", async (c) => {
         return c.json({ error: "invalid_multipart_body" }, 400);
       }
       const field = form.get("model");
-      modelInBody = typeof field === "string" ? field : null;
+      const requestPart = form.get("request");
+      let requestJson: Record<string, unknown> | null = null;
+      if (requestPart !== null) {
+        try {
+          requestJson = JSON.parse(
+            typeof requestPart === "string"
+              ? requestPart
+              : await requestPart.text(),
+          );
+        } catch {
+          return c.json({ error: "invalid_multipart_body" }, 400);
+        }
+      }
+      const requestModel = requestJson?.model;
+      modelInBody = typeof field === "string"
+        ? field
+        : typeof requestModel === "string"
+        ? requestModel
+        : null;
 
       if (modelInBody && !isModelAllowed(token, modelInBody)) {
         return c.json(
@@ -201,7 +220,25 @@ proxy.all("/:provider_slug/*", async (c) => {
           403,
         );
       }
-      bodyInit = bytes;
+      const merged = requestJson && modelInBody
+        ? mergeRequestBody(modelInBody, requestJson)
+        : requestJson;
+      if (merged !== requestJson) {
+        const rewritten = new FormData();
+        for (const [name, value] of form.entries()) {
+          rewritten.append(
+            name,
+            name === "request"
+              ? new Blob([JSON.stringify(merged)], {
+                type: "application/json",
+              })
+              : value,
+          );
+        }
+        bodyInit = rewritten;
+      } else {
+        bodyInit = bytes;
+      }
     } else if (isJson) {
       // Read the body as text once — falling back to c.req.raw.body after a
       // failed json() would hand fetch() an already-disturbed stream
@@ -252,6 +289,24 @@ proxy.all("/:provider_slug/*", async (c) => {
     }
   }
 
+  // A provider with fixed upstream headers (jev-images) only serves its own
+  // model slugs: a base slug sent here would get the variant behaviour while
+  // its usage row reads as the base model.
+  if (
+    provider.upstream_headers &&
+    (!modelInBody || getModel(modelInBody)?.provider_slug !== provider_slug)
+  ) {
+    return c.json(
+      {
+        error: "model_not_on_provider",
+        detail: `provider ${provider_slug} only serves its own models, got ${
+          modelInBody ?? "none"
+        }`,
+      },
+      400,
+    );
+  }
+
   // Catalog names which env var holds the upstream secret; the actual key
   // never sits in the DB. Sourced from Doppler → Fly secrets → process env.
   // To rotate: update Doppler, redeploy. Done AFTER model authorization so a
@@ -269,6 +324,11 @@ proxy.all("/:provider_slug/*", async (c) => {
     provider.auth_style,
     upstreamKey,
   );
+  for (const [k, v] of Object.entries(provider.upstream_headers ?? {})) {
+    headers.set(k, v);
+  }
+  // A re-encoded form has a new boundary; fetch() writes the content-type.
+  if (bodyInit instanceof FormData) headers.delete("content-type");
 
   // Re-apply content-length against the (possibly merged) body we will send.
   if (bodyInit && typeof bodyInit === "string") {
