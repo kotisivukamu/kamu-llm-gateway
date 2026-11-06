@@ -2,7 +2,7 @@
 // durable Postgres (ADR 0001 §8/§9).
 //
 // Each proxy machine meters every request into its own SQLite usage_log, on
-// its own volume (proxy/src/routes/usage.ts). This pulls completed-request
+// its own volume (proxy/usage.go). This pulls completed-request
 // rows into llm.usage_log, keyed by key_id + the lineage columns
 // (parent_key_id, root_key_id), so spend rolls up per subtree (§7.6).
 //
@@ -44,7 +44,7 @@ import { priceTable, priceUsage } from "./pricing.ts";
 const PAGE_LIMIT = 5000;
 const OVERLAP_MS = 10_000;
 
-// Mirrors the proxy's GET /usage response contract (proxy/src/routes/usage.ts).
+// Mirrors the proxy's GET /usage response contract (proxy/usage.go).
 // Duplicated on purpose: the wire shape is the contract, not a shared type.
 // Keep in sync with the proxy if the shape changes. Only the fields the
 // poller reads are listed: not the feed's cost_usd (the api prices), and not

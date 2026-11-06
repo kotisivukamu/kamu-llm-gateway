@@ -1,12 +1,11 @@
 name: CI
 
-# Regression suite for kamu-llm-gateway. Two Deno packages (api, proxy) each
-# get their own throwaway Postgres service container: migrate up, create the
-# app_user role the app connects as (mirrors dev bootstrap — see
+# Regression suite for kamu-llm-gateway. The api (Deno) and the proxy (Go)
+# each get their own throwaway Postgres service container: migrate up, create
+# the app_user role the app connects as (mirrors dev bootstrap — see
 # database/migrations/20260824120000_initial_schema.up.sql's own comment that
-# app_user is expected to already exist), then `deno task validate`
-# (fmt/lint/check + the api's own `deno test`) and, for proxy, `deno task test`
-# separately since its `validate` task doesn't run tests (see proxy/deno.json).
+# app_user is expected to already exist), then the api's `deno task validate`
+# (fmt/lint/check + `deno test`) and the proxy's gofmt/vet + `go test -race`.
 # A third job rehearses the migration chain itself (up / down / up), mirroring
 # kamuid's migrations CI job.
 
@@ -109,7 +108,7 @@ jobs:
       - run: deno task validate
 
   proxy:
-    name: Proxy (Deno)
+    name: Proxy (Go)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -129,15 +128,21 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # gateway-db.numeric.test.ts seeds fixture rows as postgres (owner);
-      # GATEWAY_DATABASE_URL (what the module under test connects with) is
-      # admin_role, matching prod: the proxy's key lookup has no user context,
-      # so it needs BYPASSRLS — as app_user, RLS hides every llm.keys row.
+      # The tests seed fixture rows as postgres (owner, same URL with
+      # postgres:postgres); GATEWAY_DATABASE_URL (what the proxy connects
+      # with) is admin_role, matching prod: the key lookup has no user
+      # context, so it needs BYPASSRLS — as app_user, RLS hides every
+      # llm.keys row.
       GATEWAY_DATABASE_URL: postgres://admin_role:admin_role@localhost:5432/kamu_llm_gateway_test
       ED25519_PUBLIC_KEY: VxiWrfnCtLTKomsUlDYHqGcLrUsyUh0g+n310PIbS64=
       CONTROL_PLANE_POLL_TOKEN: ci-poll-token
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proxy/go.mod
+          cache-dependency-path: proxy/go.sum
+      # Only for the migration runner.
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
@@ -162,8 +167,8 @@ jobs:
           psql "postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test" \
             -c "ALTER ROLE admin_role PASSWORD 'admin_role';"
 
-      # proxy's `validate` task is fmt/lint/check only (no test — see
-      # proxy/deno.json); run the test suite as its own step so a fmt/lint
-      # failure and a test failure are both distinctly reported.
-      - run: deno task validate
-      - run: deno task test
+      - name: gofmt + vet
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+      - run: go test -race ./...

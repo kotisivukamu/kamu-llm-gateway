@@ -1,9 +1,10 @@
-// Pure pricing math shared by the proxy (its catalog estimate on GET /usage),
-// the api poller (prices at ingest, ADR 0003 §2) and the admin Prices page
-// (shows the price ingest resolves, via the same pickPrice).
-// No runtime imports: proxy, api and admin images all copy shared/.
+// Pure pricing math shared by the api poller (prices at ingest, ADR 0003 §2)
+// and the admin Prices page (shows the price ingest resolves, via the same
+// pickPrice). The Go proxy carries a mirror of computeCostUsd (proxy/cost.go)
+// for the catalog estimate on its GET /usage; keep the two in step.
+// No runtime imports: api and admin images copy shared/.
 
-// One request's usage in the four billing buckets (see proxy/src/cost.ts for
+// One request's usage in the four billing buckets (see proxy/cost.go for
 // how provider responses normalise into them).
 export interface NormUsage {
   input_tokens: number;

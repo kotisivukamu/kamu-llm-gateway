@@ -1,21 +1,23 @@
-# Build context is the repo ROOT: `@shared/` resolves to ../shared relative to
-# proxy/deno.json, so shared/ is copied as a sibling of the proxy dir.
-FROM denoland/deno:alpine-2.7.11
-
-WORKDIR /repo/proxy
-
-COPY proxy/deno.json proxy/deno.lock ./
-RUN deno install
-
-COPY shared/ /repo/shared/
-COPY proxy/catalog.json ./catalog.json
-COPY proxy/src ./src
-RUN deno cache src/main.ts
+# Build context is the repo ROOT (release.yml builds every service from it).
+# Static binary (modernc sqlite needs no cgo) on distroless/static, which has
+# the CA certs for the HTTPS upstreams. It runs as root on purpose: the
+# usage ledger lives on the Fly volume at /data, which mounts root-owned.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY proxy/go.mod proxy/go.sum ./
+RUN go mod download
+COPY proxy/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/kamu-llm-proxy .
 
 ARG VERSION=dev
 # A RUN consuming the arg ties its cache key to the value, so a cached source
 # layer can't silently keep a stale VERSION (see kamuid api/Dockerfile).
-RUN echo "${VERSION}" > /etc/kamu-llm-gateway-version
-ENV VERSION=${VERSION}
+RUN echo "${VERSION}" > /out/kamu-llm-gateway-version
 
-CMD ["deno", "task", "start"]
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/kamu-llm-proxy /kamu-llm-proxy
+COPY --from=build /out/kamu-llm-gateway-version /etc/kamu-llm-gateway-version
+ARG VERSION=dev
+ENV VERSION=${VERSION}
+EXPOSE 8301
+ENTRYPOINT ["/kamu-llm-proxy"]

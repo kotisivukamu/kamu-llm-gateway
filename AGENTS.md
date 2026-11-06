@@ -97,9 +97,9 @@ Both are first-class `keys` rows, consumed and revoked identically.
 
 Run dev servers inside the shared `dev` tmux session — never as background
 processes (`&` / `run_in_background`), which are invisible to the user. Use
-`tmux send-keys` into named windows: `kamu-llm-gateway-api`. Check
-`tmux list-windows -t dev` first to avoid duplicates/port conflicts. API is
-`:8300`. There is **no UI here** — the gateway is driven through the kamuhub
+`tmux send-keys` into named windows: `kamu-llm-gateway-api`,
+`kamu-llm-gateway-proxy`. Check `tmux list-windows -t dev` first to avoid
+duplicates/port conflicts. API is `:8300`, proxy `:8301`. There is **no UI here** — the gateway is driven through the kamuhub
 front door (`app.kamuhub.com`) and (for internal callers) the `POST /api/keys/derive`
 endpoint. Dev traffic must go through the locally-run kamuhub BFF, which
 injects the `X-Kamuhub-Authz` context — the API rejects a bare KamuID bearer.
@@ -110,6 +110,10 @@ injects the `X-Kamuhub-Authz` context — the API rejects a bare KamuID bearer.
 - No emojis in code or commit messages.
 - Run `deno fmt` before committing; `cd api && deno task validate` runs
   fmt-check + lint + type-check.
+- `proxy/` is Go (stdlib `net/http` first, few dependencies): `gofmt`,
+  `go vet ./...` and `go test ./...` (real Postgres, see README). The model
+  catalog is `proxy/catalog.json`, read by both the Go proxy and the Deno
+  api/admin; edit it there, never copy it.
 - Commit directly to `main` — no branches or PRs. Commit often; don't sit on WIP.
 - Don't use defensive programming — fail fast. Validate at system boundaries
   (user input, external APIs); trust internal code. No fallbacks for cases that

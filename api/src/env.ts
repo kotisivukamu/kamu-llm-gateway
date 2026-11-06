@@ -102,7 +102,7 @@ const schema = z.object({
   // Control-plane poller (ADR 0001 §8/§9): pulls the proxy satellite's local
   // usage buffer (GET /usage) into the durable llm.usage_log table. Base URL
   // of the proxy satellite and the shared service-to-service token it expects
-  // (proxy/src/routes/usage.ts's CONTROL_PLANE_POLL_TOKEN — the same value on
+  // (proxy/usage.go's CONTROL_PLANE_POLL_TOKEN — the same value on
   // both sides). Interval in ms between poll runs; the poller itself streams
   // through the whole backlog per run (paging on max_id) so a slow interval
   // still catches up in one run after an outage.

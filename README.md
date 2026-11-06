@@ -23,7 +23,16 @@ builder-queue, the kamuhub agent) via `POST /api/keys/derive`.
   that: `GET /usage` (no `/api` prefix) takes a gateway key itself and serves
   that key's priced usage rows with the proxy's `/usage` contract, for cost
   readers such as the builder (ADR 0003 §5).
-- `shared/` — pure types shared across the api and (future) satellite.
+- `proxy/` — the LLM proxy satellite, in Go (stdlib `net/http`, pgx,
+  modernc SQLite). Verifies a gateway key, swaps in the provider key,
+  forwards to `/llm/<provider>/...` and streams the answer back chunk by
+  chunk, then meters usage into a per-machine SQLite ledger the api's poller
+  drains over `GET /usage`. Reads Postgres only (key metadata,
+  `model_prices` for `GET /catalog`). It was Deno until 2026-11: returning a
+  `tee()` branch of the upstream body made Deno deliver each SSE stream in
+  one burst at the end.
+- `shared/` — types, pricing math and the catalog loader shared by the api
+  and admin (Deno).
 - `database/migrations/` — timestamped `.up.sql`/`.down.sql` pairs applied with
   the Deno runner.
 - `docs/adr/` — architecture decision records. `0001` is the spec.
@@ -49,7 +58,10 @@ Usage is a gateway-owned ledger keyed by `key_id`, with `parent_key_id` +
 
 Callers hit `${KAMU_LLM_PROXY_URL}/llm/<provider>/<upstream path>` with their
 gateway key; the proxy swaps in the provider key and forwards. Providers and
-model prices live in `proxy/src/catalog.ts`. Each provider's upstream key is an
+model prices live in `proxy/catalog.json`, the one copy: the Go proxy embeds
+it at build time and the api/admin read it through `shared/catalog.ts` (the
+`note` fields carry the reasoning behind each price and route). Each
+provider's upstream key is an
 env var named there (`ANTHROPIC_API_KEY`, `CORTECS_API_KEY`, ...), set in
 Doppler and synced to the `kamu-llm-gateway-proxy` Fly app as a secret; a
 provider whose key is unset answers 502 `provider_key_missing`.
@@ -106,6 +118,10 @@ deno task migrate                     # up; also: migrate:down, reset, new-migra
 cd api && cp .env.example .env   # fill in the two DB pools + KAMUHUB_JWKS_URL +
                                  # the Ed25519 sub-key signing key
 deno task dev
+
+# 3. Proxy (:8301), Go 1.25+
+cd proxy && set -a && . ./.env && set +a   # from .env.example
+go run .
 ```
 
 Drive it through the unified front door: the **kamuhub** dashboard at
@@ -115,7 +131,7 @@ context).
 
 ## Running tests
 
-The regression suite (`api/src/tests/`, `proxy/src/tests/`) needs a real
+The regression suite (`api/src/tests/`, `proxy/*_test.go`) needs a real
 Postgres — no mocking of the DB layer. `.github/workflows/ci.yml` starts one
 per package as a service container; to run the same thing locally:
 
@@ -135,14 +151,16 @@ cd database
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/kamu_llm_gateway_test \
   deno run --allow-net --allow-read --allow-env migrate.ts up
 
-# 4. Run each package's tests. Every env var the test process needs has a
-#    default baked into src/tests/support/env.ts (throwaway Ed25519 test key
-#    material + postgres://…/kamu_llm_gateway_test on localhost:5432) — set
-#    a var explicitly only to point at a different DB/port, or when running
-#    outside the support/env.ts bootstrap (e.g. CI's `env:` block, which sets
-#    them explicitly so the workflow is self-documenting).
+# 4. Run each package's tests. Every env var the tests need has a default
+#    (api: src/tests/support/env.ts, proxy: testutil_test.go): throwaway
+#    Ed25519 test key material + postgres://…/kamu_llm_gateway_test on
+#    localhost:5432. The proxy connects as admin_role (password admin_role,
+#    set it once: ALTER ROLE admin_role PASSWORD 'admin_role') and seeds
+#    fixtures as postgres. Set a var explicitly only to point at a different
+#    DB/port (CI's `env:` block sets them so the workflow is
+#    self-documenting).
 cd ../api && deno task test      # or `deno task validate` (fmt+lint+check+test)
-cd ../proxy && deno task test    # proxy's `validate` task is fmt+lint+check only
+cd ../proxy && go test ./...     # CI also runs gofmt -l, go vet, -race
 ```
 
 The suite truncates and reseeds its own fixture rows per test file

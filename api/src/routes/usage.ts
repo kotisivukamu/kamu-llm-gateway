@@ -116,7 +116,7 @@ usage.get("/usage/facets", async (c) => {
 // sub-key, any gateway key) reads its own rows with the credential it calls
 // the proxy with, and gets the billed cost instead of the proxy's catalog
 // estimate. Same auth, scope, cursor and response shape as the proxy
-// (proxy/src/routes/usage.ts), so a reader switches by base URL:
+// (proxy/usage.go), so a reader switches by base URL:
 //
 //   GET /usage?since=<cursor>&limit=<n>&key_id=<id>&jti=<id>&name=<label>
 //   Auth: x-api-key or Authorization: Bearer <gateway credential>

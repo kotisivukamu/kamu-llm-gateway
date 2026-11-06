@@ -105,7 +105,7 @@ export interface UsageScope {
 }
 
 /**
- * Verifies a gateway credential the way the proxy does (proxy/src/auth.ts):
+ * Verifies a gateway credential the way the proxy does (proxy/auth.go):
  * a top-level `sk_live_` key by its hash, a derived sub-key JWT by its
  * Ed25519 signature and then its row (jti = row PK). The row must be active
  * or over_budget and unexpired; a derived key's root must be too. Over-budget
