@@ -13,7 +13,7 @@ export interface NormUsage {
 }
 
 // USD per 1M tokens, plus an optional flat per-request charge. A catalog
-// ModelEntry (proxy/src/catalog.ts) satisfies this structurally; an
+// ModelEntry (shared/catalog.ts) satisfies this structurally; an
 // llm.model_prices row maps onto it with every field set and no
 // long_context tier.
 export interface Rates {

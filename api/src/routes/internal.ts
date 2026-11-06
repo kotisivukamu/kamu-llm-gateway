@@ -5,7 +5,7 @@ import {
   type FullRates,
   parsePriceForm,
 } from "@shared/prices.ts";
-import { MODELS } from "../../../proxy/src/catalog.ts";
+import { MODELS } from "@shared/catalog.ts";
 import { adminSql } from "../config/db.ts";
 import { env } from "../env.ts";
 import { clearPriceCache, reloadPriceTable } from "../lib/pricing.ts";

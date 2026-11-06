@@ -8,6 +8,7 @@ COPY proxy/deno.json proxy/deno.lock ./
 RUN deno install
 
 COPY shared/ /repo/shared/
+COPY proxy/catalog.json ./catalog.json
 COPY proxy/src ./src
 RUN deno cache src/main.ts
 

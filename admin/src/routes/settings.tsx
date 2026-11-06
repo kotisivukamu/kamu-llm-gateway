@@ -2,12 +2,12 @@ import { Hono } from "@hono/hono";
 import { requireSession, type SessionEnv } from "../middleware/session.ts";
 import { adminSql } from "../config/db.ts";
 import { Layout } from "../views/layout.tsx";
-import { MODELS, PROVIDERS } from "../../../proxy/src/catalog.ts";
+import { MODELS, PROVIDERS } from "@shared/catalog.ts";
 
 // Feature 2 — system-wide settings. See admin/README.md "Feature 2 scope" for
 // the full honest accounting of what's built vs deferred. Summary:
 //
-//   - The provider/model catalog (proxy/src/catalog.ts) stays CODE, read here
+//   - The provider/model catalog (proxy/catalog.json) stays in the repo, read here
 //     read-only, imported directly (source of truth, no drift risk from a
 //     stale DB copy).
 //   - llm.settings (new, this task) is a small DB-backed, admin-editable
@@ -80,7 +80,7 @@ settingsRoutes.get("/settings", async (c) => {
         </form>
       </div>
 
-      <h2>Model catalog (read-only — source: proxy/src/catalog.ts)</h2>
+      <h2>Model catalog (read-only — source: proxy/catalog.json)</h2>
       <table>
         <thead>
           <tr>

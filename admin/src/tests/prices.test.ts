@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import type { PriceTable } from "@shared/pricing.ts";
-import { MODELS } from "../../../proxy/src/catalog.ts";
+import { MODELS } from "@shared/catalog.ts";
 import {
   effectivePrice,
   type NewPrice,

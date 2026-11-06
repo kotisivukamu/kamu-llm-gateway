@@ -8,11 +8,11 @@
 // difference is the clock: ingest prices a usage row at its created_at, the
 // callers here at now() (or a new row's valid_from).
 //
-// Unlike pricing.ts this imports the proxy catalog at runtime; the api and
-// admin images both copy proxy/src/catalog.ts next to shared/.
+// Unlike pricing.ts this imports the catalog (shared/catalog.ts, data in
+// proxy/catalog.json) at runtime; the api and admin images copy both.
 
 import { pickPrice, type PriceRow, type PriceTable } from "./pricing.ts";
-import { MODELS } from "../proxy/src/catalog.ts";
+import { MODELS } from "./catalog.ts";
 
 export interface StoredPrice extends PriceRow {
   source: string;

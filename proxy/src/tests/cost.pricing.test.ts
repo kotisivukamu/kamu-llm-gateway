@@ -133,7 +133,10 @@ Deno.test("per_request_cost_usd is charged once per request on top of token cost
     418 * 0.042 / 1e6,
     1e-15,
   );
-  assertEquals(MODELS["jev-1.14.0"], MODELS["jev-latest"]);
+  assertEquals(
+    computeCostUsd(MODELS["jev-1.14.0"], usage(418, 33)),
+    computeCostUsd(MODELS["jev-latest"], usage(418, 33)),
+  );
 });
 
 // ADR 0003 §1: the provider-reported cost is kept raw next to the buckets.

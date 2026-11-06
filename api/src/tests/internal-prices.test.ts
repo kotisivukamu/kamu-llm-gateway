@@ -1,7 +1,7 @@
 import "./support/env.ts";
 import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import { computeCostUsd } from "@shared/pricing.ts";
-import { MODELS } from "../../../proxy/src/catalog.ts";
+import { MODELS } from "@shared/catalog.ts";
 import { hashKey } from "../lib/keys.ts";
 import { priceTable } from "../lib/pricing.ts";
 import { pollOnce } from "../lib/usage-poller.ts";

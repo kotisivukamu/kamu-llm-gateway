@@ -3,7 +3,7 @@ import type { PriceTable } from "@shared/pricing.ts";
 import { requireSession, type SessionEnv } from "../middleware/session.ts";
 import { adminSql } from "../config/db.ts";
 import { Layout } from "../views/layout.tsx";
-import { MODELS } from "../../../proxy/src/catalog.ts";
+import { MODELS } from "@shared/catalog.ts";
 import {
   type Effective,
   effectivePrice,
@@ -230,8 +230,8 @@ pricesRoutes.get("/prices", async (c) => {
       <h2>Current prices (what ingest charges now)</h2>
       <p class="muted">
         Latest llm.model_prices row with valid_from &lt;= now, else the code
-        catalog (proxy/src/catalog.ts). "derived" cache rates are the 0.1x /
-        1.25x input fallback for catalog entries without cache rates.
+        catalog (proxy/catalog.json). "derived" cache rates are the 0.1x / 1.25x
+        input fallback for catalog entries without cache rates.
       </p>
       <table>
         <thead>

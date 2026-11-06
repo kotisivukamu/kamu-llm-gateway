@@ -115,13 +115,13 @@ across the whole platform.
 **Scope, stated honestly:**
 
 - **Built:** a read-only view of the current provider/model catalog
-  (`proxy/src/catalog.ts`, imported directly — source of truth, no DB-copy-drift
+  (`proxy/catalog.json` via `shared/catalog.ts`, imported directly — source of truth, no DB-copy-drift
   risk) at `GET /settings`, PLUS a new, small, genuinely runtime-editable table:
   `llm.settings` (migration `20260825130000_settings.up.sql`), a single-row
   singleton of _operator overrides_ — `disabled_models: text[]` and
   `default_budget_usd`. Full read/write through `GET/POST /settings` and
   `GET /api/settings`, backed by a real DB row (verified: see "Testing" below).
-- **Deliberately NOT built:** making the catalog itself (`proxy/src/catalog.ts`)
+- **Deliberately NOT built:** making the catalog itself (`proxy/catalog.json`)
   DB-backed. Reason: each model entry is wired to an env var name
   (`api_key_env_var`) resolved from Doppler/Fly secrets at request time — moving
   the catalog into the DB would mean either duplicating that secrets plumbing

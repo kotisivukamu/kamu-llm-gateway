@@ -1,7 +1,7 @@
 import "./support/env.ts";
 import { assertAlmostEquals, assertEquals, assertRejects } from "@std/assert";
 import { computeCostUsd } from "@shared/pricing.ts";
-import { MODELS } from "../../../proxy/src/catalog.ts";
+import { MODELS } from "@shared/catalog.ts";
 import { clearPriceCache } from "../lib/pricing.ts";
 import { ingestNow, pollAll, pollOnce } from "../lib/usage-poller.ts";
 import { adminSql, resetDb, seedKey, seedTeam } from "./support/db.ts";

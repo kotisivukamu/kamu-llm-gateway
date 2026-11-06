@@ -2,7 +2,7 @@
 //
 // A usage row is priced with the llm.model_prices row for its model that has
 // the greatest valid_from <= the usage row's created_at. A model with no such
-// row falls back to the proxy catalog's price (proxy/src/catalog.ts, copied
+// row falls back to the proxy catalog's price (proxy/catalog.json via shared/catalog.ts, copied
 // into the api image), with price_id null. A model in neither is unpriced:
 // cost_usd null, tokens still stored so it can be repriced later.
 //
@@ -19,7 +19,7 @@ import {
   type PriceTable,
 } from "@shared/pricing.ts";
 import type { StoredPrice } from "@shared/prices.ts";
-import { getModel } from "../../../proxy/src/catalog.ts";
+import { getModel } from "@shared/catalog.ts";
 import { adminSql } from "../config/db.ts";
 
 export { pickPrice, type PriceRow, type PriceTable };

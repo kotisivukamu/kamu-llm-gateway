@@ -1,8 +1,7 @@
 # Build context is the repo ROOT: `@shared/` resolves to ../shared relative to
 # api/deno.json, so shared/ is copied as a sibling of the api dir. The usage
-# poller prices with the proxy catalog as fallback (lib/pricing.ts imports
-# ../../../proxy/src/catalog.ts), so that one file is copied too, as admin/
-# does.
+# poller prices with the catalog as fallback (shared/catalog.ts reads
+# ../proxy/catalog.json), so that one file is copied too, as admin/ does.
 FROM denoland/deno:debian-2.7.11
 
 WORKDIR /repo/api
@@ -11,7 +10,7 @@ COPY api/deno.json api/deno.lock ./
 RUN deno install
 
 COPY shared/ /repo/shared/
-COPY proxy/src/catalog.ts /repo/proxy/src/catalog.ts
+COPY proxy/catalog.json /repo/proxy/catalog.json
 COPY api/src/ src/
 RUN deno cache src/main.ts
 
